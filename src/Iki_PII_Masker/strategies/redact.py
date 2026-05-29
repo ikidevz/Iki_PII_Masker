@@ -1,6 +1,6 @@
 from typing import Optional
 from .base import BaseMaskingStrategy, MaskingContext
-from ..config import PIIType
+from ..config.registry import PIIType
 
 
 class RedactStrategy(BaseMaskingStrategy):

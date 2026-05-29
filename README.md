@@ -6,30 +6,33 @@ A production-grade, pipe-friendly CLI tool and Python library for data
 engineers and analysts who need to sanitize datasets fast — without wrestling
 with config files or heavyweight frameworks.
 
+![img](assets/readme.png)
+
 ```bash
 pii_masker mask data.csv --auto --strategy fake -o clean.csv
 ```
 
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
-![Engine](https://img.shields.io/badge/engine-Polars%20%7C%20Pandas%20%7C%20DuckDB-orange)
+![Engine](https://img.shields.io/badge/engine-Polars%20%7C%20Pandas%20%7C%20DuckDB%20%7C%20SQLAlchemy-orange)
 
 ---
 
 ## Features
 
-| Feature                  | Details                                                    |
-| ------------------------ | ---------------------------------------------------------- |
-| **6 masking strategies** | `fake`, `redact`, `hash`, `null`, `partial`, `keep`        |
-| **Reversible masking**   | AES-256-GCM — restore originals anytime with `--key`       |
-| **Auto-detect PII**      | `--auto` flags columns by name heuristics (10 PII types)   |
-| **Multi-engine**         | Polars (default), Pandas, or DuckDB — swap with `--engine` |
-| **5 file formats**       | CSV, Parquet, JSON, NDJSON, Excel                          |
-| **Pipe-friendly**        | stdin → stdout, zero config required                       |
-| **Reproducible fakes**   | `--seed` for deterministic output in CI/testing            |
-| **Dry run + report**     | Preview masking plan before touching any data              |
-| **PII detector**         | `detect` subcommand scans columns and prints sample values |
-| **Python façade API**    | Import by feature — no internal sub-packages exposed       |
+| Feature                   | Details                                                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **10 masking strategies** | `fake`, `redact`, `hash`, `null`, `partial`, `keep`, `tokenize`, `pseudonymize`, `generalize`, `mask_format` |
+| **Reversible masking**    | AES-256-GCM — restore originals anytime with `--key`                                                         |
+| **Dual PII detection**    | Column-name heuristics + cell-value scanning (`detect_pii_by_value`)                                         |
+| **Multi-engine**          | Polars, Pandas, DuckDB, SQLAlchemy (live DB), XML, JSONPath                                                  |
+| **6 file formats**        | CSV, Parquet, JSON, NDJSON, Excel, XML                                                                       |
+| **Pipe-friendly**         | stdin → stdout, zero config required                                                                         |
+| **Reproducible fakes**    | `--seed` for deterministic output in CI/testing                                                              |
+| **Dry run + report**      | Preview masking plan before touching any data                                                                |
+| **PII detector**          | `detect` subcommand scans columns and cell values, prints sample values                                      |
+| **Profile-driven config** | `ProfileConfig` + `ColumnRuleMap` — load masking rules from YAML or Python dict                              |
+| **Python façade API**     | Import by feature — no internal sub-packages exposed                                                         |
 
 ---
 
@@ -47,6 +50,15 @@ pip install pii-masker
 
 **Core dependencies:** `rich`, `polars`, `pandas`, `faker`,
 `cryptography`, `pyarrow`, `openpyxl`, `duckdb`
+
+**Optional extras:**
+
+```bash
+pip install sqlalchemy psycopg2-binary   # SQLAlchemy adapter (live database)
+pip install jsonpath-ng                  # JSONPath adapter (nested JSON)
+pip install pyyaml                       # ProfileConfig YAML support
+# XML uses stdlib xml.etree — no install needed (lxml optional for speed)
+```
 
 **CLI framework:** `argparse` (stdlib — no extra install needed)
 
@@ -126,10 +138,8 @@ through CSV, Parquet, and JSON.
 ### Pipe-friendly
 
 ```bash
-# Inline in a pipeline
 cat raw.csv | pii_masker mask --format csv --strategy fake > clean.csv
 
-# Chain with other tools
 cat data.csv \
   | pii_masker mask --format csv --columns email --strategy redact \
   | gzip > masked.csv.gz
@@ -161,22 +171,10 @@ Preview exactly what would be masked before writing anything:
 pii_masker mask data.csv --auto --strategy fake --dry-run --report
 ```
 
-```
-┌─────────────┬─────────────┬──────────┬───────────────┐
-│ Column      │ PII Type    │ Strategy │ Rows Affected │
-├─────────────┼─────────────┼──────────┼───────────────┤
-│ email       │ email       │ fake     │        50,000 │
-│ full_name   │ name        │ fake     │        50,000 │
-│ phone       │ phone       │ fake     │        50,000 │
-└─────────────┴─────────────┴──────────┴───────────────┘
-Rows: 50,000  Columns masked: 3  Time: 0.031s  [DRY RUN — no output written]
-```
-
 ### Reproducible fake data (CI / snapshot tests)
 
 ```bash
 pii_masker mask data.csv --columns email:name --strategy fake --seed 42 -o masked.csv
-# Identical output on every run — safe for golden-file tests.
 ```
 
 ### Hash with salt
@@ -203,14 +201,38 @@ pii_masker mask report.xlsx \
 
 ## All Strategies
 
-| Strategy  | Output example     | Reversible?         | Best for                     |
-| --------- | ------------------ | ------------------- | ---------------------------- |
-| `fake`    | `alice@fake.com`   | No                  | Realistic test/dev data      |
-| `redact`  | `[EMAIL]`          | With `--reversible` | Audit logs, shared reports   |
-| `hash`    | `SHA:3d7a2c1e9b4f` | With `--reversible` | Join keys, deduplication     |
-| `null`    | `null`             | No                  | Dropping PII for analytics   |
-| `partial` | `****1234`         | No                  | Card numbers, phone numbers  |
-| `keep`    | original value     | N/A                 | Whitelisting non-PII columns |
+| Strategy       | Output example     | Reversible?         | Best for                                         |
+| -------------- | ------------------ | ------------------- | ------------------------------------------------ |
+| `fake`         | `alice@fake.com`   | No                  | Realistic test/dev data                          |
+| `redact`       | `[EMAIL]`          | With `--reversible` | Audit logs, shared reports                       |
+| `hash`         | `SHA:3d7a2c1e9b4f` | With `--reversible` | Join keys, deduplication                         |
+| `null`         | `null`             | No                  | Dropping PII for analytics                       |
+| `partial`      | `****1234`         | No                  | Card numbers, phone numbers                      |
+| `keep`         | original value     | N/A                 | Whitelisting non-PII columns                     |
+| `tokenize`     | `TOK-3d7a2c1e`     | Via token table     | Stable opaque tokens; cross-run lookup possible  |
+| `pseudonymize` | `Barbara Clark`    | Via mapping dict    | Consistent fakes — same input → same fake output |
+| `generalize`   | `30-40` / `1990`   | No                  | Analytics bucketing — ages, dates, zip codes     |
+| `mask_format`  | `xxxx@xxxxxxx.xxx` | No                  | Format-preserving masking; keeps separators      |
+
+### New strategy details
+
+**`tokenize`** — replaces each value with a stable `TOK-<hex>` token. The same
+input always maps to the same token within a run. Access the lookup table via
+`TokenizeStrategy.token_table` or reverse a token with `.detokenize(token)`.
+
+**`pseudonymize`** — like `fake` but consistent: the same real name always
+becomes the same fake name. This preserves referential integrity across tables
+— a `user_id` that appears in five tables will map to the same fake ID in all
+five after masking.
+
+**`generalize`** — coarsens precise values into broader ranges. Numerics become
+range buckets (`34` → `30-40`), dates are truncated to year or month
+(`1990-07-15` → `1990`), and strings are prefix-masked (`SW1A2AA` → `SW1****`).
+
+**`mask_format`** — replaces alphanumeric characters with `*` while keeping
+structural separators (`.`, `-`, `@`, spaces, brackets) in place. An email like
+`john@corp.com` becomes `xxxx@xxxx.xxx` — the shape is preserved so
+format-sensitive downstream systems still parse it correctly.
 
 ---
 
@@ -225,9 +247,12 @@ Arguments:
 Options:
   -o, --output PATH         Output file path. Omit to write to stdout.
   -c, --columns TEXT        Colon-separated column names. e.g. email:name:phone
-  -s, --strategy STRATEGY   fake|redact|hash|null|partial|keep  [default: redact]
+  -s, --strategy STRATEGY   fake|redact|hash|null|partial|keep|
+                            tokenize|pseudonymize|generalize|mask_format
+                            [default: redact]
   -e, --engine ENGINE       polars|pandas|duckdb  [default: polars]
-  -f, --format FORMAT       csv|parquet|json|ndjson|excel  (auto-detected from extension)
+  -f, --format FORMAT       csv|parquet|json|ndjson|excel|xml
+                            (auto-detected from extension)
       --auto                Auto-detect PII columns by name heuristics
       --reversible          Use AES-256-GCM reversible encryption
       --key TEXT            Secret key for reversible masking
@@ -270,44 +295,56 @@ Options:
 
 ## Python API
 
-Every feature is accessible as a clean Python API through the façade module.
+Every feature is accessible through the façade module.
 Import only what you need — no internal sub-packages, no internal classes.
 
 ```python
-from Iki_PII_Masker.facade import detect_pii           # scan columns for PII
-from Iki_PII_Masker.facade import mask_dataframe        # apply any strategy
-from Iki_PII_Masker.facade import unmask_dataframe      # reverse AES masking
-from Iki_PII_Masker.facade import load_data, save_data  # file I/O
+from Iki_PII_Masker.facade import detect_pii              # column-name PII detection
+from Iki_PII_Masker.facade import detect_pii_by_value     # cell-value PII detection
+from Iki_PII_Masker.facade import mask_dataframe           # apply any strategy
+from Iki_PII_Masker.facade import unmask_dataframe         # reverse AES masking
+from Iki_PII_Masker.facade import load_data, save_data     # file I/O
 from Iki_PII_Masker.facade import make_context, make_reversible_context
 from Iki_PII_Masker.facade import derive_encryption_key
-from Iki_PII_Masker.facade import create_adapter        # polars / pandas / duckdb
+from Iki_PII_Masker.facade import create_adapter           # polars / pandas / duckdb
+from Iki_PII_Masker.facade import create_sql_adapter       # live relational database
+from Iki_PII_Masker.facade import create_xml_adapter       # XML documents
+from Iki_PII_Masker.facade import create_jsonpath_adapter  # nested JSON
 from Iki_PII_Masker.facade import report_detection, report_masking
+from Iki_PII_Masker.facade import ProfileConfig, ColumnRuleMap
 from Iki_PII_Masker.facade import Strategy, Engine, FileFormat
 ```
 
 ### Façade feature reference
 
-| Feature                                               | What it does                                                           |
-| ----------------------------------------------------- | ---------------------------------------------------------------------- |
-| `detect_pii(columns)`                                 | Scan a column list → `{col: PIIType}` for every PII match              |
-| `mask_dataframe(adapter, columns, strategy, context)` | Apply a strategy to named columns; returns elapsed seconds             |
-| `unmask_dataframe(adapter, columns, key)`             | Reverse AES-256-GCM masking in-place                                   |
-| `load_data(adapter, source, fmt)`                     | Load a file, path, `BytesIO`, or `None` (stdin) into an adapter        |
-| `save_data(adapter, dest, fmt)`                       | Write adapter data to a file, `BytesIO`, or `None` (stdout)            |
-| `make_context(**kwargs)`                              | Build a plain `MaskingContext` (salt, seed, partial options)           |
-| `make_reversible_context(secret)`                     | Build a context that AES-encrypts every value; key derived from secret |
-| `derive_encryption_key(secret)`                       | Derive 32-byte AES key from a secret string                            |
-| `create_adapter(engine)`                              | Instantiate a Polars, Pandas, or DuckDB adapter                        |
-| `report_detection(adapter, detected, file)`           | Print Rich PII detection table with sample values                      |
-| `report_masking(adapter, col_map, strategy, elapsed)` | Print Rich masking summary table                                       |
+| Feature                                                | What it does                                                           |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `detect_pii(columns)`                                  | Scan column _names_ → `{col: PIIType}` for every PII match             |
+| `detect_pii_by_value(adapter, sample_rows, threshold)` | Scan actual cell _values_ — catches generic column names like `col_7`  |
+| `mask_dataframe(adapter, columns, strategy, context)`  | Apply any of 10 strategies to named columns; returns elapsed seconds   |
+| `unmask_dataframe(adapter, columns, key)`              | Reverse AES-256-GCM masking in-place                                   |
+| `load_data(adapter, source, fmt)`                      | Load a file, path, `BytesIO`, or `None` (stdin) into an adapter        |
+| `save_data(adapter, dest, fmt)`                        | Write adapter data to a file, `BytesIO`, or `None` (stdout)            |
+| `make_context(**kwargs)`                               | Build a plain `MaskingContext` (salt, seed, partial options)           |
+| `make_reversible_context(secret)`                      | Build a context that AES-encrypts every value; key derived from secret |
+| `derive_encryption_key(secret)`                        | Derive 32-byte AES key from a secret string                            |
+| `create_adapter(engine)`                               | Instantiate a Polars, Pandas, or DuckDB adapter                        |
+| `create_sql_adapter(url, table)`                       | Mask a live database table via SQLAlchemy                              |
+| `create_xml_adapter(xpath, fields)`                    | Mask XML documents by XPath row selector                               |
+| `create_jsonpath_adapter(paths)`                       | Mask nested JSON by JSONPath expressions                               |
+| `ProfileConfig.from_yaml(path)`                        | Load masking rules from a YAML file                                    |
+| `ProfileConfig.from_dict(data)`                        | Build masking rules from a Python dict                                 |
+| `ColumnRuleMap({col: Strategy})`                       | Per-column strategy map with a single `.apply(adapter)` call           |
+| `report_detection(adapter, detected, file)`            | Print Rich PII detection table with sample values                      |
+| `report_masking(adapter, col_map, strategy, elapsed)`  | Print Rich masking summary table                                       |
 
-### Python API examples
+### Detection
 
-**Detect PII and print a report:**
+**Column-name detection** (fast, zero I/O):
 
 ```python
-from Iki_PII_Masker.facade import create_adapter, load_data, detect_pii, report_detection
-from Iki_PII_Masker.facade import Engine
+from Iki_PII_Masker.facade import detect_pii, report_detection
+from Iki_PII_Masker.facade import create_adapter, load_data, Engine
 from pathlib import Path
 
 adapter  = create_adapter(Engine.polars)
@@ -317,24 +354,52 @@ detected = detect_pii(adapter.columns)
 report_detection(adapter, detected, Path("data.csv"), samples=3)
 ```
 
-**Mask with fake data (reproducible):**
+**Cell-value detection** (catches generic column names like `col_7`):
 
 ```python
-from Iki_PII_Masker.facade import create_adapter, load_data, save_data
-from Iki_PII_Masker.facade import mask_dataframe, make_context
-from Iki_PII_Masker.facade import Strategy, Engine
-from pathlib import Path
+from Iki_PII_Masker.facade import detect_pii, detect_pii_by_value
 
-adapter = create_adapter(Engine.polars)
-load_data(adapter, Path("data.csv"))
-mask_dataframe(adapter, "email:full_name:phone", Strategy.fake, make_context(seed=42))
-save_data(adapter, Path("masked.csv"))
+name_hits  = detect_pii(adapter.columns)
+value_hits = detect_pii_by_value(adapter, sample_rows=100, existing=name_hits)
+all_found  = {**name_hits, **value_hits}
 ```
 
-**Auto-detect and redact:**
+### Masking strategies
+
+**Fake data (reproducible):**
 
 ```python
-mask_dataframe(adapter, None, Strategy.redact, auto=True)
+from Iki_PII_Masker.facade import mask_dataframe, make_context, Strategy
+
+mask_dataframe(adapter, "email:full_name:phone", Strategy.fake, make_context(seed=42))
+```
+
+**Pseudonymize — consistent fakes (preserves referential integrity):**
+
+```python
+# Same "Alice Smith" in every table → same fake name everywhere
+mask_dataframe(adapter, "full_name:email", Strategy.pseudonymize, make_context(seed=1))
+```
+
+**Tokenize — stable opaque tokens:**
+
+```python
+# user_id → TOK-3d7a2c1e  (same input = same token within the run)
+mask_dataframe(adapter, "user_id", Strategy.tokenize)
+```
+
+**Generalize — coarsen to ranges / year buckets:**
+
+```python
+# 34 → "30-40",  1990-07-15 → "1990",  SW1A2AA → "SW1****"
+mask_dataframe(adapter, "age:dob:zip", Strategy.generalize)
+```
+
+**MaskFormat — preserve structural separators:**
+
+```python
+# john@corp.com → xxxx@xxxx.xxx,  4111-1234-5678-9000 → ****-****-****-****
+mask_dataframe(adapter, "email:credit_card", Strategy.mask_format)
 ```
 
 **Hash with salt:**
@@ -360,40 +425,171 @@ mask_dataframe(adapter, "ssn:dob:password", Strategy.null)
 
 ```python
 from Iki_PII_Masker.facade import (
-    create_adapter, load_data, save_data,
     mask_dataframe, unmask_dataframe,
-    make_reversible_context, derive_encryption_key,
-    Strategy, Engine,
+    make_reversible_context, derive_encryption_key, Strategy,
 )
-from pathlib import Path
 
 SECRET = "my-production-secret-2024"
 
-# Mask
-adapter = create_adapter(Engine.polars)
-load_data(adapter, Path("data.csv"))
 mask_dataframe(adapter, "email:user_id", Strategy.redact,
                make_reversible_context(SECRET))
 save_data(adapter, Path("masked.csv"))
 
 # Restore
 key = derive_encryption_key(SECRET)
-adapter2 = create_adapter(Engine.polars)
 load_data(adapter2, Path("masked.csv"))
 unmask_dataframe(adapter2, ["email", "user_id"], key)
-save_data(adapter2, Path("restored.csv"))
 ```
 
-**In-memory pipe (BytesIO):**
+**Multi-strategy pipeline on one adapter:**
+
+```python
+mask_dataframe(adapter, "email:full_name",  Strategy.pseudonymize, make_context(seed=42))
+mask_dataframe(adapter, "credit_card",      Strategy.mask_format)
+mask_dataframe(adapter, "dob:age",          Strategy.generalize)
+mask_dataframe(adapter, "user_id",          Strategy.tokenize)
+mask_dataframe(adapter, "password:ssn",     Strategy.null)
+```
+
+### Adapters
+
+**Standard adapters (Polars / Pandas / DuckDB):**
+
+```python
+from Iki_PII_Masker.facade import create_adapter, Engine
+
+adapter = create_adapter(Engine.polars)   # fastest general-purpose
+adapter = create_adapter(Engine.pandas)   # use for Excel I/O
+adapter = create_adapter(Engine.duckdb)   # use for files larger than RAM
+```
+
+**SQLAlchemy adapter — mask a live database table:**
+
+```python
+from Iki_PII_Masker.facade import create_sql_adapter, mask_dataframe, Strategy
+
+# Requires: pip install sqlalchemy psycopg2-binary
+adapter = create_sql_adapter(
+    url="postgresql+psycopg2://user:pass@localhost/mydb",
+    table="users",
+    id_column="id",
+    chunk_size=500,
+)
+adapter.load()   # fetches all rows into memory
+mask_dataframe(adapter, "email:phone", Strategy.fake)
+adapter.save()   # writes batched UPDATEs back to the database
+```
+
+Supported databases: PostgreSQL, MySQL, MariaDB, SQLite, MS SQL Server, Oracle
+(anything with a SQLAlchemy driver).
+
+**XML adapter — mask XML documents by XPath:**
+
+```python
+from Iki_PII_Masker.facade import create_xml_adapter, load_data, save_data, mask_dataframe
+
+# Requires no extra install — uses stdlib xml.etree (or lxml if installed)
+adapter = create_xml_adapter(
+    xpath="//user",                      # repeating row element
+    pii_fields=["email", "phone", "name"],
+)
+load_data(adapter, Path("users.xml"))
+mask_dataframe(adapter, "email:phone:name", Strategy.fake)
+save_data(adapter, Path("masked.xml"))
+```
+
+**JSONPath adapter — mask nested JSON:**
+
+```python
+from Iki_PII_Masker.facade import create_jsonpath_adapter
+
+# Requires: pip install jsonpath-ng
+adapter = create_jsonpath_adapter({
+    "email": "$.users[*].contact.email",
+    "phone": "$.users[*].contact.phone",
+})
+load_data(adapter, Path("data.json"))
+mask_dataframe(adapter, "email:phone", Strategy.redact)
+save_data(adapter, Path("masked.json"))
+```
+
+### Profile-driven masking
+
+**`ColumnRuleMap`** — apply per-column strategies in a single call:
+
+```python
+from Iki_PII_Masker.facade import ColumnRuleMap, Strategy, make_context
+
+rules = ColumnRuleMap({
+    "email":       Strategy.fake,
+    "full_name":   Strategy.pseudonymize,
+    "credit_card": Strategy.partial,
+    "ssn":         Strategy.null,
+    "user_id":     Strategy.hash,
+})
+rules.apply(adapter, make_context(seed=42))
+```
+
+**`ProfileConfig`** — load rules from a YAML file:
+
+```yaml
+# masking_profile.yaml
+engine: polars
+strategy: redact # default for auto-detected columns
+seed: 42
+auto: true # also auto-detect any PII not listed below
+columns:
+  email: fake
+  full_name: pseudonymize
+  credit_card: partial
+  ssn: null
+  user_id: tokenize
+  dob: generalize
+  phone: mask_format
+```
+
+```python
+from Iki_PII_Masker.facade import ProfileConfig, create_adapter
+
+profile = ProfileConfig.from_yaml("masking_profile.yaml")
+adapter = create_adapter(profile.engine)
+load_data(adapter, Path("data.csv"))
+profile.apply(adapter)
+save_data(adapter, Path("masked.csv"))
+```
+
+Or build a profile in Python without a file:
+
+```python
+profile = ProfileConfig.from_dict({
+    "engine":   "polars",
+    "strategy": "redact",
+    "seed":     42,
+    "auto":     True,
+    "columns": {
+        "email":     "fake",
+        "ssn":       "null",
+        "user_id":   "tokenize",
+        "full_name": "pseudonymize",
+    },
+})
+profile.apply(adapter)
+```
+
+Save a profile back to YAML for reuse:
+
+```python
+profile.to_yaml("masking_profile.yaml")
+```
+
+### In-memory pipe (BytesIO)
 
 ```python
 import io
 from Iki_PII_Masker.facade import create_adapter, load_data, save_data
-from Iki_PII_Masker.facade import mask_dataframe, make_context
-from Iki_PII_Masker.facade import Strategy, Engine, FileFormat
+from Iki_PII_Masker.facade import mask_dataframe, make_context, Strategy, Engine, FileFormat
 
-buf_in = io.BytesIO(open("data.csv", "rb").read())
-
+buf_in  = io.BytesIO(open("data.csv", "rb").read())
 adapter = create_adapter(Engine.polars)
 load_data(adapter, buf_in, FileFormat.csv)
 mask_dataframe(adapter, "email:full_name", Strategy.fake, make_context(seed=99))
@@ -402,49 +598,14 @@ buf_out = io.BytesIO()
 save_data(adapter, buf_out, FileFormat.csv)
 ```
 
-**Multi-strategy pipeline on a single adapter:**
-
-```python
-# Pass 1 — fake names and emails
-mask_dataframe(adapter, "email:full_name", Strategy.fake, make_context(seed=42))
-
-# Pass 2 — partial card numbers
-mask_dataframe(adapter, "credit_card", Strategy.partial,
-               make_context(partial_keep=4, partial_side="right"))
-
-# Pass 3 — null out secrets
-mask_dataframe(adapter, "password:ssn", Strategy.null)
-```
-
-**Dry run with masking report:**
-
-```python
-from Iki_PII_Masker.facade import mask_dataframe, report_masking, Strategy
-import time
-
-t0      = time.perf_counter()
-mask_dataframe(adapter, None, Strategy.fake, auto=True, dry_run=True)
-elapsed = time.perf_counter() - t0
-
-report_masking(adapter, col_map, Strategy.fake, elapsed, dry_run=True)
-```
-
-**All three engines:**
-
-```python
-for engine in [Engine.polars, Engine.pandas, Engine.duckdb]:
-    adapter = create_adapter(engine)
-    load_data(adapter, Path("data.csv"))
-    mask_dataframe(adapter, "email:full_name", Strategy.redact)
-    save_data(adapter, Path(f"masked_{engine.value}.csv"))
-```
-
 ---
 
 ## PII Auto-Detection
 
-The `--auto` flag, `detect` command, and `detect_pii()` function match column
-names against regex heuristics for ten built-in PII types:
+### Column-name detection
+
+The `--auto` flag, `detect` command, and `detect_pii()` match column names
+against regex heuristics for ten built-in PII types:
 
 | PII Type      | Matched column names (examples)                            |
 | ------------- | ---------------------------------------------------------- |
@@ -459,10 +620,29 @@ names against regex heuristics for ten built-in PII types:
 | `user_id`     | `user_id`, `userid`, `account_id`, `customer_id`           |
 | `password`    | `password`, `passwd`, `pwd`                                |
 
-Detection is heuristic. Always review `detect` output on new datasets before
-running a masked job in production.
+### Cell-value detection
 
-**Register a custom PII type at runtime:**
+`detect_pii_by_value()` scans actual cell values with regex patterns — it
+catches columns with generic names (`col_7`, `field_2`) that still contain
+Social Security numbers, credit card numbers, emails, and so on.
+
+```python
+from Iki_PII_Masker.facade import detect_pii, detect_pii_by_value
+
+# Step 1 — fast name-based scan
+name_hits  = detect_pii(adapter.columns)
+
+# Step 2 — deeper value scan for anything missed
+value_hits = detect_pii_by_value(adapter, sample_rows=100, threshold=0.3)
+
+# Combined results
+all_found  = {**name_hits, **value_hits}
+```
+
+`threshold` is the fraction of sampled non-null values that must match a
+pattern before a column is flagged (default `0.3` = 30 %).
+
+### Register a custom PII type
 
 ```python
 from Iki_PII_Masker.facade import PIIRegistry, PIIType
@@ -504,78 +684,87 @@ pii_masker mask data.csv --columns email --reversible --key "$MASK_KEY" -o out.c
 
 Benchmarked on a 10M-row, 500 MB CSV with 5 PII columns:
 
-| Engine | Strategy | Time | Notes                         |
-| ------ | -------- | ---- | ----------------------------- |
-| Polars | `redact` | ~4s  | Best all-rounder              |
-| Polars | `hash`   | ~5s  |                               |
-| Polars | `fake`   | ~18s |                               |
-| DuckDB | `redact` | ~4s  | Handles files larger than RAM |
-| DuckDB | `hash`   | ~5s  |                               |
-| DuckDB | `fake`   | ~19s |                               |
-| Pandas | `redact` | ~9s  | Use for Excel I/O             |
-| Pandas | `fake`   | ~35s |                               |
+| Engine | Strategy       | Time | Notes                         |
+| ------ | -------------- | ---- | ----------------------------- |
+| Polars | `redact`       | ~4s  | Best all-rounder              |
+| Polars | `hash`         | ~5s  |                               |
+| Polars | `fake`         | ~18s |                               |
+| Polars | `pseudonymize` | ~19s | Slightly slower than fake     |
+| Polars | `tokenize`     | ~6s  | Fast — SHA-256 based          |
+| Polars | `generalize`   | ~5s  |                               |
+| Polars | `mask_format`  | ~6s  |                               |
+| DuckDB | `redact`       | ~4s  | Handles files larger than RAM |
+| DuckDB | `fake`         | ~19s |                               |
+| Pandas | `redact`       | ~9s  | Use for Excel I/O             |
+| Pandas | `fake`         | ~35s |                               |
 
-Polars is the default for speed. Use **DuckDB** (`--engine duckdb`) when your
-file is too large to fit in memory — DuckDB scans Parquet and CSV directly from
-disk without loading the full dataset. Use **Pandas** (`--engine pandas`) only
-when you need Excel I/O or tight ecosystem integration.
+Polars is the default for speed. Use **DuckDB** when your file is too large to
+fit in memory. Use **Pandas** only when you need Excel I/O or tight ecosystem
+integration. Use **SQLAlchemy** for masking data directly in a live database
+without exporting to files first.
 
 ---
 
 ## Architecture
 
-`pii_masker` is built around four design patterns that keep it easy to extend
+`pii_masker` is built around five design patterns that keep it easy to extend
 without touching existing code:
 
-**Strategy** — each masking algorithm (`RedactStrategy`, `FakeStrategy`, etc.)
-is an independent class. Adding a new algorithm means adding one class; no
-existing code changes.
+**Strategy** — each masking algorithm is an independent class. Adding a new
+algorithm means adding one file; no existing code changes.
 
 **Registry** — `PIIRegistry` is the single source of truth for all PII
-metadata (patterns, redact labels, Faker methods). Adding a new PII type is
-one entry in one place.
+metadata. Adding a new PII type is one entry in one place.
 
-**Adapter** — `PolarsAdapter`, `PandasAdapter`, and `DuckDBAdapter` expose an
-identical interface to the rest of the codebase. Swapping or adding an engine
-requires one new class.
+**Adapter** — all engines expose an identical interface to the rest of the
+codebase. Swapping or adding an engine requires one new class.
 
 **Factory** — `StrategyFactory`, `AdapterFactory`, and `FormatRegistry`
 centralise all object creation so CLI functions contain zero branching logic.
 
 **Façade** — `facade.py` is the single public door into the Python API.
-It re-exports every capability as a named action function so callers never
-import from internal sub-packages directly.
+Every capability is exposed as a named action function so callers never import
+from internal sub-packages directly.
 
 ### Package layout
 
 ```
 src/Iki_PII_Masker/
-├── facade.py            ← public Python API (import from here)
-├── service.py           ← MaskingService orchestrator
-├── reporter.py          ← Rich terminal output
-├── cli.py               ← argparse CLI entry point
-├── app.py               ← CLI command implementations
+├── facade.py                  ← public Python API (import from here)
+├── service.py                 ← MaskingService orchestrator
+├── reporter.py                ← Rich terminal output
+├── cli.py                     ← argparse CLI entry point
+├── app.py                     ← CLI command implementations
 ├── config/
-│   ├── enums.py         ← Strategy, Engine, FileFormat
-│   ├── registry.py      ← PIIType, PIIRegistry
-│   ├── crypto.py        ← AES-256-GCM helpers
-│   ├── io.py            ← load/save routing
-│   └── utils.py         ← exit_error helper
+│   ├── enums.py               ← Strategy, Engine, FileFormat
+│   ├── registry.py            ← PIIType, PIIRegistry
+│   ├── crypto.py              ← AES-256-GCM helpers
+│   ├── io.py                  ← load/save routing
+│   ├── value_detector.py      ← ValuePatternDetector (cell-value PII scan)
+│   ├── xml_io.py              ← XMLAdapter
+│   ├── jsonpath_io.py         ← JSONPathAdapter
+│   ├── profile.py             ← ProfileConfig, ColumnRuleMap
+│   └── utils.py               ← exit_error helper
 ├── strategies/
-│   ├── base.py          ← BaseMaskingStrategy, MaskingContext
+│   ├── base.py                ← BaseMaskingStrategy, MaskingContext
 │   ├── redact.py
 │   ├── fake.py
 │   ├── hash.py
 │   ├── partial.py
 │   ├── null.py
 │   ├── keep.py
-│   └── factory.py       ← StrategyFactory, FormatRegistry
+│   ├── tokenize.py            ← TokenizeStrategy
+│   ├── pseudonymize.py        ← PseudonymizeStrategy
+│   ├── generalize.py          ← GeneralizeStrategy
+│   ├── mask_format.py         ← MaskFormatStrategy
+│   └── factory.py             ← StrategyFactory, FormatRegistry
 └── adapters/
-    ├── base.py           ← BaseDataFrameAdapter
+    ├── base.py                ← BaseDataFrameAdapter
     ├── polars_adapter.py
     ├── pandas_adapter.py
     ├── duckdb_adapter.py
-    └── factory.py        ← AdapterFactory
+    ├── sqlalchemy_adapter.py  ← SQLAlchemyAdapter
+    └── factory.py             ← AdapterFactory
 ```
 
 ---
@@ -620,6 +809,24 @@ mask_pii = BashOperator(
       -o tests/fixtures/users_masked.csv
 ```
 
+### Profile-driven CI masking
+
+```yaml
+# .github/workflows/mask.yml
+- name: Apply masking profile
+  run: |
+    python - <<'EOF'
+    from Iki_PII_Masker.facade import ProfileConfig, create_adapter, load_data, save_data
+    from pathlib import Path
+
+    profile = ProfileConfig.from_yaml("masking_profile.yaml")
+    adapter = create_adapter(profile.engine)
+    load_data(adapter, Path("data/raw.csv"))
+    profile.apply(adapter)
+    save_data(adapter, Path("data/masked.csv"))
+    EOF
+```
+
 ### Pre-commit hook — block raw PII from being committed
 
 ```yaml
@@ -633,32 +840,52 @@ mask_pii = BashOperator(
       files: tests/fixtures/.*\.(csv|parquet)$
 ```
 
+### Mask a PostgreSQL table directly
+
+```python
+from Iki_PII_Masker.facade import (
+    create_sql_adapter, mask_dataframe, Strategy, make_context
+)
+
+adapter = create_sql_adapter(
+    url="postgresql+psycopg2://user:pass@localhost/prod",
+    table="customers",
+)
+adapter.load()
+mask_dataframe(adapter, "email:phone:full_name", Strategy.fake, make_context(seed=42))
+adapter.save()
+```
+
 ---
 
 ## Testing
 
-The test suite lives in `tests/` and covers all layers — strategies, registry,
-adapters, service, and CLI end-to-end.
+The test suite lives in `tests/` and covers all layers.
 
 ```bash
 # Install dev dependencies
 pip install -e ".[dev]"
+pip install sqlalchemy jsonpath-ng pyyaml    # optional adapters
 
-# Run all 119 tests
+# Run all 207 tests
 python -m pytest
 
 # Run with coverage report
 python -m pytest --cov=pii_masker --cov-report=term-missing
+
+# Run a single file
+python -m pytest tests/test_strategies.py -v
 ```
 
-| Test file            | Scope                                  | Tests   |
-| -------------------- | -------------------------------------- | ------- |
-| `test_strategies.py` | Unit — all 6 masking strategies        | 35      |
-| `test_registry.py`   | Unit — PIIRegistry + FormatRegistry    | 15      |
-| `test_adapters.py`   | Integration — Polars / Pandas / DuckDB | 34      |
-| `test_service.py`    | Unit — MaskingService business logic   | 10      |
-| `test_cli.py`        | End-to-end — real CLI via subprocess   | 25      |
-| **Total**            |                                        | **119** |
+| Test file            | Scope                                                           | Tests   |
+| -------------------- | --------------------------------------------------------------- | ------- |
+| `test_strategies.py` | Unit — all 10 masking strategies                                | 77      |
+| `test_registry.py`   | Unit — PIIRegistry, FormatRegistry, ValuePatternDetector        | 23      |
+| `test_adapters.py`   | Integration — Polars, Pandas, DuckDB, SQLAlchemy, XML, JSONPath | 56      |
+| `test_service.py`    | Unit — MaskingService + façade wrapper                          | 19      |
+| `test_profile.py`    | Unit — ProfileConfig + ColumnRuleMap                            | 17      |
+| `test_cli.py`        | End-to-end — real CLI via subprocess                            | 15      |
+| **Total**            |                                                                 | **207** |
 
 ---
 
@@ -668,40 +895,39 @@ python -m pytest --cov=pii_masker --cov-report=term-missing
 
 ```bash
 python examples/generate_sample_data.py          # creates examples/data/sample.*
-python examples/generate_sample_data.py --rows 50000  # larger dataset
+python examples/generate_sample_data.py --rows 50000
 ```
 
-### Python API examples (14 examples)
+### Python API examples (22 examples)
 
 ```bash
 python examples/run_examples.py
 ```
 
-All 14 examples use the façade API — each example imports only the feature it
-needs:
-
-| #   | Example                                    | Façade imports used                                  |
-| --- | ------------------------------------------ | ---------------------------------------------------- |
-| 01  | Detect PII columns                         | `detect_pii`, `report_detection`                     |
-| 02  | Redact explicit columns                    | `mask_dataframe`, `Strategy.redact`                  |
-| 03  | Auto-detect + redact                       | `mask_dataframe` with `auto=True`                    |
-| 04  | Fake data with seed                        | `mask_dataframe`, `make_context(seed=42)`            |
-| 05  | Hash with salt                             | `mask_dataframe`, `make_context(salt=...)`           |
-| 06  | Partial masking — keep last 4 digits       | `mask_dataframe`, `make_context(partial_keep=4)`     |
-| 07  | Null out sensitive columns                 | `mask_dataframe`, `Strategy.null`                    |
-| 08  | Reversible AES-256-GCM mask + unmask       | `make_reversible_context`, `unmask_dataframe`        |
-| 09  | All three engines side-by-side             | `create_adapter`, `Engine.polars/pandas/duckdb`      |
-| 10  | Parquet round-trip                         | `load_data`, `save_data`, `FileFormat.parquet`       |
-| 11  | Pipe simulation (stdin → stdout in memory) | `load_data(buf_in, FileFormat.csv)`                  |
-| 12  | Dry run + masking report                   | `mask_dataframe(dry_run=True)`, `report_masking`     |
-| 13  | Keep strategy (whitelist passthrough)      | `mask_dataframe`, `Strategy.keep`                    |
-| 14  | Multi-strategy pipeline on one adapter     | Multiple `mask_dataframe` passes on the same adapter |
-
-### Bash examples
-
-```bash
-bash examples/run_examples.sh
-```
+| #   | Example                                     | Façade feature used                                |
+| --- | ------------------------------------------- | -------------------------------------------------- |
+| 01  | Detect PII by column name                   | `detect_pii`, `report_detection`                   |
+| 02  | Detect PII by cell values                   | `detect_pii_by_value`                              |
+| 03  | Redact explicit columns                     | `mask_dataframe`, `Strategy.redact`                |
+| 04  | Fake data with seed                         | `mask_dataframe`, `make_context(seed=42)`          |
+| 05  | Pseudonymize — consistent fakes             | `Strategy.pseudonymize`                            |
+| 06  | Tokenize — stable opaque tokens             | `Strategy.tokenize`                                |
+| 07  | Generalize — ranges and year buckets        | `Strategy.generalize`                              |
+| 08  | MaskFormat — preserve structural separators | `Strategy.mask_format`                             |
+| 09  | Hash with salt                              | `Strategy.hash`, `make_context(salt=...)`          |
+| 10  | Partial masking — keep last 4 digits        | `Strategy.partial`, `make_context(partial_keep=4)` |
+| 11  | Null out sensitive columns                  | `Strategy.null`                                    |
+| 12  | Reversible AES-256-GCM mask + unmask        | `make_reversible_context`, `unmask_dataframe`      |
+| 13  | All three standard engines                  | `create_adapter`, `Engine.polars/pandas/duckdb`    |
+| 14  | SQLAlchemy — mask a live SQLite table       | `create_sql_adapter`                               |
+| 15  | XML adapter — XPath-based masking           | `create_xml_adapter`                               |
+| 16  | JSONPath adapter — nested JSON masking      | `create_jsonpath_adapter`                          |
+| 17  | ColumnRuleMap — per-column strategy map     | `ColumnRuleMap`                                    |
+| 18  | ProfileConfig from dict                     | `ProfileConfig.from_dict`                          |
+| 19  | ProfileConfig from YAML file                | `ProfileConfig.from_yaml`, `profile.to_yaml`       |
+| 20  | Pipe simulation — BytesIO in-memory         | `load_data(buf, FileFormat.csv)`                   |
+| 21  | Dry run + masking report                    | `mask_dataframe(dry_run=True)`, `report_masking`   |
+| 22  | Multi-strategy pipeline on one adapter      | Multiple `mask_dataframe` passes                   |
 
 ---
 
@@ -711,8 +937,9 @@ bash examples/run_examples.sh
 2. Add or update tests in `tests/` — run `python -m pytest` before pushing.
 3. To register a new PII type, add a `PIIType(...)` entry to `PIIRegistry._types` — no other file needs to change.
 4. To add a new masking strategy, subclass `BaseMaskingStrategy`, implement `_apply()`, register it in `StrategyFactory`, and add the enum value to `Strategy`.
-5. To add a new engine, subclass `BaseDataFrameAdapter`, implement all 7 methods, and register it in `AdapterFactory` and the `Engine` enum.
+5. To add a new engine, subclass `BaseDataFrameAdapter`, implement all required methods, and register it in `AdapterFactory` and the `Engine` enum.
 6. All public Python API additions go through `facade.py` — internal classes are not part of the public surface.
+7. New optional adapters (SQLAlchemy, XML, JSONPath) live in `config/` or `adapters/` and are imported lazily inside their factory functions so the core package has no extra hard dependencies.
 
 ---
 

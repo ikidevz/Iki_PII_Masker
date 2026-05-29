@@ -5,7 +5,11 @@ from .null import NullStrategy
 from .redact import RedactStrategy
 from .hash import HashStrategy
 from .fake import FakeStrategy
+from .generalize import GeneralizeStrategy
 from .partial import PartialStrategy
+from .pseudonymize import PseudonymizeStrategy
+from .tokenize import TokenizeStrategy
+from .mask_format import MaskFormatStrategy
 
 
 __all__ = [
@@ -18,5 +22,9 @@ __all__ = [
     'RedactStrategy',
     'HashStrategy',
     'FakeStrategy',
-    'PartialStrategy'
+    'PartialStrategy',
+    'GeneralizeStrategy',
+    'PseudonymizeStrategy',
+    'MaskFormatStrategy',
+    'TokenizeStrategy'
 ]

@@ -1,8 +1,9 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional
-from ..strategies import BaseMaskingStrategy, MaskingContext
-from ..config import PIIType, FileFormat
+from ..strategies.base import BaseMaskingStrategy, MaskingContext
+from ..config.enums import FileFormat
+from ..config.registry import PIIType
 
 
 class BaseDataFrameAdapter(ABC):

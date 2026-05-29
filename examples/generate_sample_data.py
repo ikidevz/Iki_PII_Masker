@@ -39,6 +39,7 @@ def generate(rows: int, seed: int) -> pl.DataFrame:
         "full_name":   [fake.name() for _ in range(rows)],
         "email":       [fake.email() for _ in range(rows)],
         "phone":       [fake.phone_number() for _ in range(rows)],
+        "age":         [fake.random_int(min=18, max=80) for _ in range(rows)],
         "dob":         [str(fake.date_of_birth()) for _ in range(rows)],
         "ssn":         [fake.ssn() for _ in range(rows)],
         "address":     [fake.address().replace("\n", ", ") for _ in range(rows)],
@@ -92,7 +93,7 @@ def main() -> None:
 
     print(f"\nColumns: {', '.join(df.columns)}")
     print(f"PII columns: full_name, email, phone, dob, ssn, address, ip_address, "
-          f"credit_card, user_id, password")
+          f"credit_card, user_id, password, age")
     print(f"\nNext step:")
     print(f"  python examples/run_examples.py")
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from .enums import FileFormat
 from .utils import exit_error
-from ..adapters import BaseDataFrameAdapter
-from ..strategies import FormatRegistry
+from ..adapters.base import BaseDataFrameAdapter
+from ..strategies.factory import FormatRegistry
 
 from pathlib import Path
 from typing import Optional

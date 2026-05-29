@@ -1,21 +1,26 @@
 from .adapters import (
     BaseDataFrameAdapter,
+    AdapterFactory,
     PolarsAdapter,
     PandasAdapter,
     DuckDBAdapter,
-    AdapterFactory
+    SQLAlchemyAdapter,
+    JSONPathAdapter,
+    XMLAdapter
 )
 
 from .config import (
     derive_key,
     encrypt_value,
     decrypt_value,
+    ColumnRuleMap,
     Strategy,
     Engine,
     FileFormat,
     PIIType,
     PIIRegistry,
     exit_error,
+    ValuePatternDetector,
 )
 from .config.io import load_adapter, save_adapter
 
@@ -29,7 +34,11 @@ from .strategies import (
     RedactStrategy,
     HashStrategy,
     FakeStrategy,
-    PartialStrategy
+    PartialStrategy,
+    GeneralizeStrategy,
+    PseudonymizeStrategy,
+    MaskFormatStrategy,
+    TokenizeStrategy
 )
 
 from .service import MaskingService
@@ -38,19 +47,24 @@ from .reporter import Reporter
 
 __all__ = [
     "BaseDataFrameAdapter",
+    "AdapterFactory",
     "PolarsAdapter",
     "PandasAdapter",
     "DuckDBAdapter",
-    "AdapterFactory",
+    'SQLAlchemyAdapter',
+    'JSONPathAdapter',
+    'XMLAdapter',
     "derive_key",
     "encrypt_value",
     "decrypt_value",
+    'ColumnRuleMap',
     "Strategy",
     "Engine",
     "FileFormat",
     "PIIType",
     "PIIRegistry",
     "exit_error",
+    'ValuePatternDetector',
     "load_adapter",
     "save_adapter",
     'BaseMaskingStrategy',
@@ -63,6 +77,10 @@ __all__ = [
     'HashStrategy',
     'FakeStrategy',
     'PartialStrategy',
+    'GeneralizeStrategy',
+    'PseudonymizeStrategy',
+    'MaskFormatStrategy',
+    'TokenizeStrategy',
     'MaskingService',
     'Reporter'
 ]

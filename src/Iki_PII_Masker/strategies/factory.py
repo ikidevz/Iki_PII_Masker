@@ -1,13 +1,17 @@
-import sys
 from pathlib import Path
 from typing import ClassVar
-from ..config import Strategy, FileFormat, exit_error
+from ..config.enums import Strategy, FileFormat
+from ..config.utils import exit_error
 from .keep import KeepStrategy
 from .null import NullStrategy
 from .redact import RedactStrategy
 from .hash import HashStrategy
 from .fake import FakeStrategy
 from .partial import PartialStrategy
+from .tokenize import TokenizeStrategy
+from .pseudonymize import PseudonymizeStrategy
+from .generalize import GeneralizeStrategy
+from .mask_format import MaskFormatStrategy
 from .base import BaseMaskingStrategy
 
 
@@ -20,12 +24,16 @@ class StrategyFactory:
     def create(cls, strategy: Strategy) -> BaseMaskingStrategy:
         if not cls._registry:
             cls._registry = {
-                Strategy.keep:    KeepStrategy(),
-                Strategy.null:    NullStrategy(),
-                Strategy.redact:  RedactStrategy(),
-                Strategy.hash:    HashStrategy(),
-                Strategy.fake:    FakeStrategy(),
-                Strategy.partial: PartialStrategy(),
+                Strategy.keep:         KeepStrategy(),
+                Strategy.null:         NullStrategy(),
+                Strategy.redact:       RedactStrategy(),
+                Strategy.hash:         HashStrategy(),
+                Strategy.fake:         FakeStrategy(),
+                Strategy.partial:      PartialStrategy(),
+                Strategy.tokenize:     TokenizeStrategy(),
+                Strategy.pseudonymize: PseudonymizeStrategy(),
+                Strategy.generalize:   GeneralizeStrategy(),
+                Strategy.mask_format:  MaskFormatStrategy(),
             }
         return cls._registry[strategy]
 
@@ -41,6 +49,7 @@ class FormatRegistry:
         ".jsonl":   FileFormat.ndjson,
         ".xlsx":    FileFormat.excel,
         ".xls":     FileFormat.excel,
+        ".xml":     FileFormat.xml,
     }
 
     @classmethod

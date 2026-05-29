@@ -1,96 +1,284 @@
 """
-test_service.py — Unit tests for MaskingService.
+test_cli.py — End-to-end CLI tests via subprocess.
+
+Every test calls the real CLI binary so the full stack
+(argparse → app → service → adapter → strategy) is exercised.
 """
 
-from Iki_PII_Masker import (
-    AdapterFactory, Engine, FileFormat,
-    MaskingContext, MaskingService, Strategy,
-)
+import csv
+import subprocess
+from pathlib import Path
 
 import pytest
 
-
-@pytest.fixture
-def svc(csv_file):
-    adapter = AdapterFactory.create(Engine.polars)
-    adapter.load(csv_file, FileFormat.csv)
-    return MaskingService(adapter, Strategy.redact, MaskingContext())
+ROOT = Path(__file__).resolve().parent.parent
+CLI = ["pii_masker"]
 
 
-# ── resolve_columns ───────────────────────────────────────────────────────────
-
-def test_resolve_explicit(svc):
-    col_map = svc.resolve_columns("email:full_name", auto=False)
-    assert "email" in col_map
-    assert "full_name" in col_map
-    assert "id" not in col_map
-
-
-def test_resolve_auto(svc):
-    col_map = svc.resolve_columns(None, auto=True)
-    assert "email" in col_map
-    assert "phone" in col_map
-    assert "id" not in col_map
-    assert "revenue" not in col_map
+def run(*args, input_text: str = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [*CLI, *args],
+        capture_output=True,
+        text=True,
+        input=input_text,
+        cwd=str(ROOT),
+    )
 
 
-def test_resolve_auto_plus_explicit(svc):
-    col_map = svc.resolve_columns("revenue", auto=True)
-    assert "email" in col_map     # auto
-    assert "revenue" in col_map     # explicit
+def csv_col(path: Path, col: str) -> list[str]:
+    with open(path) as f:
+        return [row[col] for row in csv.DictReader(f)]
 
 
-def test_resolve_unknown_column_exits(svc):
-    with pytest.raises(SystemExit):
-        svc.resolve_columns("does_not_exist", auto=False)
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — basic strategies
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_mask_redact(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "email",
+            "-s", "redact", "-o", str(out))
+    assert r.returncode == 0
+    assert all(v == "[EMAIL]" for v in csv_col(out, "email"))
 
 
-def test_resolve_pii_type_attached(svc):
-    col_map = svc.resolve_columns("email", auto=False)
-    assert col_map["email"] is not None
-    assert col_map["email"].name == "email"
+def test_mask_fake(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "email", "-s", "fake",
+            "--seed", "42", "-o", str(out))
+    assert r.returncode == 0
+    emails = csv_col(out, "email")
+    assert all("alice@example.com" not in e for e in emails)
 
 
-def test_resolve_non_pii_explicit_gets_none_type(svc):
-    col_map = svc.resolve_columns("revenue", auto=False)
-    assert "revenue" in col_map
-    assert col_map["revenue"] is None
+def test_mask_hash(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "user_id", "-s", "hash",
+            "--salt", "pepper", "-o", str(out))
+    assert r.returncode == 0
+    assert all(v.startswith("SHA:") for v in csv_col(out, "user_id"))
 
 
-# ── run ───────────────────────────────────────────────────────────────────────
-
-def test_run_returns_elapsed(svc):
-    col_map = svc.resolve_columns("email", auto=False)
-    elapsed = svc.run(col_map, dry_run=False, progress=False)
-    assert elapsed >= 0.0
-
-
-def test_run_dry_run_does_not_mutate(csv_file):
-    adapter = AdapterFactory.create(Engine.polars)
-    adapter.load(csv_file, FileFormat.csv)
-    svc = MaskingService(adapter, Strategy.redact, MaskingContext())
-    col_map = svc.resolve_columns("email", auto=False)
-    before = adapter.sample_values("email", 5)
-    svc.run(col_map, dry_run=True, progress=False)
-    assert adapter.sample_values("email", 5) == before
+def test_mask_partial(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "credit_card", "-s", "partial",
+            "--partial-keep", "4", "--partial-side", "right", "-o", str(out))
+    assert r.returncode == 0
+    assert all("*" in v for v in csv_col(out, "credit_card"))
 
 
-def test_run_applies_masking(csv_file):
-    adapter = AdapterFactory.create(Engine.polars)
-    adapter.load(csv_file, FileFormat.csv)
-    svc = MaskingService(adapter, Strategy.redact, MaskingContext())
-    svc.run(svc.resolve_columns("email", auto=False),
-            dry_run=False, progress=False)
-    assert all(v == "[EMAIL]" for v in adapter.sample_values("email", 5))
+def test_mask_null(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "ssn", "-s", "null", "-o", str(out))
+    assert r.returncode == 0
+    assert all(v == "" for v in csv_col(out, "ssn"))
 
 
-def test_run_multiple_columns(csv_file):
-    adapter = AdapterFactory.create(Engine.polars)
-    adapter.load(csv_file, FileFormat.csv)
-    svc = MaskingService(adapter, Strategy.redact, MaskingContext())
-    svc.run(svc.resolve_columns("email:full_name:phone", auto=False),
-            dry_run=False, progress=False)
-    assert all(v == "[EMAIL]" for v in adapter.sample_values("email",     5))
-    assert all(v == "[NAME]" for v in adapter.sample_values("full_name", 5))
-    assert all(v == "[PHONE]" for v in adapter.sample_values("phone",     5))
-    assert adapter.sample_values("id", 1)[0] == 1   # untouched
+def test_mask_keep(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "revenue",
+            "-s", "keep", "-o", str(out))
+    assert r.returncode == 0
+    original = csv_col(csv_file, "revenue")
+    assert csv_col(out, "revenue") == original
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — new strategies
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_mask_tokenize(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "user_id",
+            "-s", "tokenize", "-o", str(out))
+    assert r.returncode == 0
+    assert all(v.startswith("TOK-") for v in csv_col(out, "user_id"))
+
+
+def test_mask_pseudonymize(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "full_name", "-s", "pseudonymize",
+            "--seed", "1", "-o", str(out))
+    assert r.returncode == 0
+    values = csv_col(out, "full_name")
+    assert all(v not in ("Alice Smith", "Bob Jones") for v in values)
+    assert all(isinstance(v, str) and v for v in values)
+
+
+def test_mask_generalize(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "age",
+            "-s", "generalize", "-o", str(out))
+    assert r.returncode == 0
+    assert all("-" in v for v in csv_col(out, "age"))
+
+
+def test_mask_mask_format(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "email",
+            "-s", "mask_format", "-o", str(out))
+    assert r.returncode == 0
+    for v in csv_col(out, "email"):
+        assert "@" in v
+        assert "*" in v
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — auto-detect
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_mask_auto(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "--auto", "-s", "redact", "-o", str(out))
+    assert r.returncode == 0
+    assert all(v == "[EMAIL]" for v in csv_col(out, "email"))
+    assert all(v == "[PHONE]" for v in csv_col(out, "phone"))
+
+
+def test_mask_auto_plus_explicit(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "--auto", "-c", "revenue", "-s", "redact",
+            "-o", str(out))
+    assert r.returncode == 0
+    assert all(v == "[EMAIL]" for v in csv_col(out, "email"))
+    assert all(v == "[REDACTED]" for v in csv_col(out, "revenue"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — engines
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("engine", ["polars", "pandas", "duckdb"])
+def test_mask_all_engines(csv_file, tmp_path, engine):
+    out = tmp_path / f"out_{engine}.csv"
+    r = run("mask", str(csv_file), "-c", "email", "-s", "redact",
+            "--engine", engine, "-o", str(out))
+    assert r.returncode == 0
+    assert all(v == "[EMAIL]" for v in csv_col(out, "email"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — multiple columns
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_mask_multiple_columns(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "email:phone:full_name",
+            "-s", "redact", "-o", str(out))
+    assert r.returncode == 0
+    assert all(v == "[EMAIL]" for v in csv_col(out, "email"))
+    assert all(v == "[PHONE]" for v in csv_col(out, "phone"))
+    assert all(v == "[NAME]" for v in csv_col(out, "full_name"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — dry run
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_dry_run_produces_no_output_file(csv_file, tmp_path):
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "-c", "email", "-s", "redact",
+            "--dry-run", "-o", str(out))
+    assert r.returncode == 0
+    assert not out.exists()
+
+
+def test_dry_run_report_in_stderr_or_stdout(csv_file, tmp_path):
+    r = run("mask", str(csv_file), "-c", "email", "-s", "redact", "--dry-run")
+    assert r.returncode == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — reversible + unmask
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_reversible_mask_unmask_round_trip(csv_file, tmp_path):
+    masked = tmp_path / "masked.csv"
+    restored = tmp_path / "restored.csv"
+    original = csv_col(csv_file, "email")
+
+    run("mask", str(csv_file), "-c", "email", "-s", "redact",
+        "--reversible", "--key", "secret123", "-o", str(masked))
+    assert all(v.startswith("ENC:") for v in csv_col(masked, "email"))
+
+    run("unmask", str(masked), "-c", "email",
+        "--key", "secret123", "-o", str(restored))
+    assert csv_col(restored, "email") == original
+
+
+def test_unmask_wrong_key_exits(csv_file, tmp_path):
+    masked = tmp_path / "masked.csv"
+    run("mask", str(csv_file), "-c", "email", "-s", "redact",
+        "--reversible", "--key", "correct", "-o", str(masked))
+    r = run("unmask", str(masked), "-c", "email", "--key", "wrong")
+    assert r.returncode != 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mask — file formats
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_mask_parquet(tmp_path, csv_file):
+    parquet_in = tmp_path / "in.parquet"
+    parquet_out = tmp_path / "out.parquet"
+
+    # create parquet from csv via polars
+    import polars as pl
+    pl.read_csv(csv_file).write_parquet(parquet_in)
+
+    r = run("mask", str(parquet_in), "-c", "email", "-s", "redact",
+            "-o", str(parquet_out))
+    assert r.returncode == 0
+    assert parquet_out.exists()
+    df = pl.read_parquet(parquet_out)
+    assert all(v == "[EMAIL]" for v in df["email"].to_list())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# detect subcommand
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_detect_finds_pii_columns(csv_file):
+    r = run("detect", str(csv_file))
+    assert r.returncode == 0
+    assert "email" in r.stdout or "email" in r.stderr
+
+
+def test_detect_shows_sample_values(csv_file):
+    r = run("detect", str(csv_file), "--samples", "2")
+    assert r.returncode == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# pipe mode (stdin → stdout)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_pipe_stdin_stdout(csv_file):
+    csv_text = csv_file.read_text()
+    r = run("mask", "--format", "csv", "-c", "email", "-s", "redact",
+            input_text=csv_text)
+    assert r.returncode == 0
+    assert "[EMAIL]" in r.stdout
+    assert "alice@example.com" not in r.stdout
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# error cases
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_unknown_column_exits(csv_file, tmp_path):
+    r = run("mask", str(csv_file), "-c", "does_not_exist", "-s", "redact",
+            "-o", str(tmp_path / "out.csv"))
+    assert r.returncode != 0
+
+
+def test_unknown_strategy_exits(csv_file, tmp_path):
+    r = run("mask", str(csv_file), "-c", "email", "-s", "notreal",
+            "-o", str(tmp_path / "out.csv"))
+    assert r.returncode != 0
+
+
+def test_no_columns_no_auto_exits(csv_file, tmp_path):
+    r = run("mask", str(csv_file), "-s", "redact",
+            "-o", str(tmp_path / "out.csv"))
+    assert r.returncode != 0

@@ -1,80 +1,189 @@
+"""
+Iki_PII_Masker.facade
+=====================
+Single-file façade — import by what the library *can do*.
+
+    from Iki_PII_Masker.facade import detect_pii
+    from Iki_PII_Masker.facade import detect_pii_by_value
+    from Iki_PII_Masker.facade import mask_dataframe
+    from Iki_PII_Masker.facade import unmask_dataframe
+    from Iki_PII_Masker.facade import load_data, save_data
+    from Iki_PII_Masker.facade import make_context, make_reversible_context
+    from Iki_PII_Masker.facade import derive_encryption_key
+    from Iki_PII_Masker.facade import create_adapter
+    from Iki_PII_Masker.facade import create_sql_adapter
+    from Iki_PII_Masker.facade import create_xml_adapter
+    from Iki_PII_Masker.facade import create_jsonpath_adapter
+    from Iki_PII_Masker.facade import report_detection, report_masking
+    from Iki_PII_Masker.facade import ProfileConfig, ColumnRuleMap
+    from Iki_PII_Masker.facade import Strategy, Engine, FileFormat
+
+────────────────────────────────────────────────────────────────────
+FEATURES AT A GLANCE
+────────────────────────────────────────────────────────────────────
+
+DETECT
+  detect_pii(columns)
+      Scan column *names* → {col: PIIType} for every PII match.
+
+  detect_pii_by_value(adapter, sample_rows, threshold)
+      Scan actual cell *values* → {col: PIIType}.
+      Catches columns like "col_7" that hold SSNs but have generic names.
+
+MASK
+  mask_dataframe(adapter, columns, strategy, context, *, auto, dry_run, progress)
+      Apply any strategy to named columns of a loaded adapter.
+      Strategies: redact · fake · hash · partial · null · keep ·
+                  tokenize · pseudonymize · generalize · mask_format
+
+UNMASK
+  unmask_dataframe(adapter, columns, key)
+      Reverse AES-256-GCM masking. Requires the same key used during masking.
+
+I/O
+  load_data(adapter, source, fmt)    — CSV/Parquet/JSON/NDJSON/Excel/XML/BytesIO
+  save_data(adapter, dest, fmt)      — file / BytesIO / stdout
+
+CONTEXT
+  make_context(**kwargs)             — plain (non-reversible) MaskingContext
+  make_reversible_context(secret)    — AES-256-GCM reversible context
+
+CRYPTO
+  derive_encryption_key(secret)      — 32-byte AES key from a secret string
+
+ADAPTERS
+  create_adapter(engine)             — Polars / Pandas / DuckDB
+  create_sql_adapter(url, table)     — live relational DB via SQLAlchemy
+  create_xml_adapter(xpath, fields)  — XML document via XPath selectors
+  create_jsonpath_adapter(paths)     — nested JSON via JSONPath expressions
+
+PROFILES
+  ProfileConfig.from_yaml(path)      — load masking rules from YAML
+  ProfileConfig.from_dict(data)      — build from a Python dict
+  ColumnRuleMap({col: Strategy})     — per-column strategy map with .apply()
+
+REPORT
+  report_detection(adapter, detected, file)
+  report_masking(adapter, col_map, strategy, elapsed)
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Optional
 
-# ── internal imports (the only place in user-facing code these appear) ─────────
+# ── internal imports (the only place these appear in user-facing code) ─────────
 from .config.enums import Strategy, Engine, FileFormat
 from .config.registry import PIIType, PIIRegistry
-from .config.crypto import derive_key, encrypt_value, decrypt_value
+from .config.crypto import derive_key
 from .config.io import load_adapter as _load_adapter, save_adapter as _save_adapter
+from .config.value_detector import ValuePatternDetector
+from .config.profile import ProfileConfig, ColumnRuleMap
 from .strategies.base import MaskingContext
 from .adapters.base import BaseDataFrameAdapter
 from .adapters.factory import AdapterFactory
+from .adapters.json_adapter import JSONPathAdapter
+from .adapters.xml_adapter import XMLAdapter
 from .service import MaskingService
 from .reporter import Reporter
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: detect PII columns
+# DETECT — column names
 # ══════════════════════════════════════════════════════════════════════════════
 
 def detect_pii(columns: list[str]) -> dict[str, PIIType]:
     """
-    Scan *columns* against the built-in PII pattern catalogue.
+    Scan *columns* against the built-in PII *name* pattern catalogue.
 
     Returns a dict mapping every column name that looks like PII to its
-    inferred ``PIIType`` (email, phone, name, ssn, credit_card, …).
+    inferred ``PIIType``.
 
     Example
     -------
-        from Iki_PII_Masker.facade import detect_pii
-
         found = detect_pii(adapter.columns)
-        # {"email": PIIType("email", ...), "full_name": PIIType("name", ...)}
+        # {"email": PIIType("email",...), "full_name": PIIType("name",...)}
     """
     return PIIRegistry.detect(columns)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: mask data
+# DETECT — cell values
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detect_pii_by_value(
+    adapter:     BaseDataFrameAdapter,
+    *,
+    sample_rows: int = 100,
+    threshold:   float = 0.3,
+    existing:    dict[str, PIIType] | None = None,
+) -> dict[str, PIIType]:
+    """
+    Scan actual cell *values* for PII patterns.
+
+    Catches columns with generic names (``col_7``, ``field_2``) that
+    still contain Social Security numbers, credit card numbers, emails, etc.
+
+    Parameters
+    ----------
+    adapter      : a loaded adapter
+    sample_rows  : rows to sample per column  (default 100)
+    threshold    : fraction of sampled values that must match to flag  (0.3 = 30 %)
+    existing     : name-based results to merge; already-detected cols are skipped
+
+    Example
+    -------
+        name_based  = detect_pii(adapter.columns)
+        value_based = detect_pii_by_value(adapter, existing=name_based)
+        all_found   = {**name_based, **value_based}
+    """
+    detector = ValuePatternDetector(
+        sample_rows=sample_rows, threshold=threshold)
+    return detector.detect(
+        columns=adapter.columns,
+        sample_fn=adapter.sample_values,
+        existing=existing,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MASK
 # ══════════════════════════════════════════════════════════════════════════════
 
 def mask_dataframe(
-    adapter:   BaseDataFrameAdapter,
-    columns:   str | None,
-    strategy:  Strategy,
-    context:   MaskingContext | None = None,
+    adapter:  BaseDataFrameAdapter,
+    columns:  str | None,
+    strategy: Strategy,
+    context:  MaskingContext | None = None,
     *,
-    auto:      bool = False,
-    dry_run:   bool = False,
-    progress:  bool = False,
+    auto:     bool = False,
+    dry_run:  bool = False,
+    progress: bool = False,
 ) -> float:
     """
     Apply *strategy* to *columns* in *adapter*.
 
     Parameters
     ----------
-    adapter   : a loaded adapter (from ``create_adapter`` + ``load_data``)
-    columns   : colon-separated column names, e.g. ``"email:phone:ssn"``
-                Pass ``None`` together with ``auto=True`` to auto-detect.
-    strategy  : ``Strategy.redact`` | ``Strategy.fake`` | ``Strategy.hash``
-                | ``Strategy.partial`` | ``Strategy.null`` | ``Strategy.keep``
-    context   : built by ``make_context()`` or ``make_reversible_context()``;
-                defaults to a plain MaskingContext() if omitted
-    auto      : if ``True``, also mask auto-detected PII columns
-    dry_run   : simulate the run without modifying the adapter
-    progress  : show a Rich progress bar (only when stderr is a tty)
+    adapter   : a loaded adapter
+    columns   : colon-separated column names e.g. ``"email:phone:ssn"``
+                Pass ``None`` with ``auto=True`` to auto-detect only.
+    strategy  : Strategy.redact | .fake | .hash | .partial | .null | .keep
+                           | .tokenize | .pseudonymize | .generalize | .mask_format
+    context   : from ``make_context()`` or ``make_reversible_context()``
+    auto      : also mask auto-detected PII columns
+    dry_run   : simulate without modifying the adapter
+    progress  : show a Rich progress bar
 
-    Returns
-    -------
-    float — elapsed seconds
+    Returns elapsed seconds.
 
     Example
     -------
-        from Iki_PII_Masker.facade import mask_dataframe, Strategy
-
-        elapsed = mask_dataframe(adapter, "email:full_name", Strategy.fake)
+        mask_dataframe(adapter, "email:full_name", Strategy.fake, make_context(seed=42))
+        mask_dataframe(adapter, "dob:zip",         Strategy.generalize)
+        mask_dataframe(adapter, "credit_card",     Strategy.mask_format)
+        mask_dataframe(adapter, "user_id",         Strategy.tokenize)
+        mask_dataframe(adapter, "email",           Strategy.pseudonymize)
     """
     ctx = context or MaskingContext()
     svc = MaskingService(adapter, strategy, ctx)
@@ -83,24 +192,21 @@ def mask_dataframe(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: unmask (reverse AES-256-GCM masking)
+# UNMASK
 # ══════════════════════════════════════════════════════════════════════════════
 
 def unmask_dataframe(
-    adapter:  BaseDataFrameAdapter,
-    columns:  list[str],
-    key:      bytes,
+    adapter: BaseDataFrameAdapter,
+    columns: list[str],
+    key:     bytes,
 ) -> None:
     """
     Reverse AES-256-GCM masking for each column in *columns*.
 
-    *key* must be the same bytes used during masking (from
-    ``derive_encryption_key`` or ``make_reversible_context``).
+    *key* must be the same bytes used during masking.
 
     Example
     -------
-        from Iki_PII_Masker.facade import unmask_dataframe, derive_encryption_key
-
         key = derive_encryption_key("my-secret")
         unmask_dataframe(adapter, ["email", "user_id"], key)
     """
@@ -109,61 +215,43 @@ def unmask_dataframe(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: load data into an adapter
+# I/O
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_data(
     adapter: BaseDataFrameAdapter,
-    source:  Any,                       # Path | str | BytesIO | None (stdin)
+    source:  Any,
     fmt:     FileFormat | None = None,
 ) -> FileFormat:
     """
     Load *source* into *adapter*.
 
-    *source* can be a ``Path``, a file-path string, a ``BytesIO`` buffer
-    (for in-memory / pipe use), or ``None`` to read from stdin.
-
-    *fmt* is optional when *source* is a ``Path`` — the format is inferred
-    from the file extension automatically.
-
-    Returns the resolved ``FileFormat``.
+    *source* can be a ``Path``, string path, ``BytesIO``, or ``None`` (stdin).
+    *fmt* is inferred from the file extension when omitted.
 
     Example
     -------
-        from Iki_PII_Masker.facade import load_data, FileFormat
-
         load_data(adapter, Path("data.csv"))
-        load_data(adapter, buf_in, FileFormat.csv)   # BytesIO pipe
+        load_data(adapter, buf, FileFormat.csv)
     """
     src = Path(source) if isinstance(source, str) else source
     return _load_adapter(adapter, src, fmt)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: save data from an adapter
-# ══════════════════════════════════════════════════════════════════════════════
-
 def save_data(
     adapter:    BaseDataFrameAdapter,
-    dest:       Any,                    # Path | str | BytesIO | None (stdout)
+    dest:       Any,
     fmt:        FileFormat | None = None,
     source_fmt: FileFormat | None = None,
 ) -> None:
     """
     Write *adapter* data to *dest*.
 
-    *dest* can be a ``Path``, a file-path string, a ``BytesIO`` buffer,
-    or ``None`` to write to stdout.
-
-    *fmt* defaults to the same format used during loading (*source_fmt*)
-    or is inferred from the *dest* extension.
+    *dest* can be a ``Path``, string path, ``BytesIO``, or ``None`` (stdout).
 
     Example
     -------
-        from Iki_PII_Masker.facade import save_data
-
         save_data(adapter, Path("output.csv"))
-        save_data(adapter, buf_out, FileFormat.csv)   # in-memory
         save_data(adapter, None, source_fmt=FileFormat.csv)  # stdout
     """
     out = Path(dest) if isinstance(dest, str) else dest
@@ -171,32 +259,23 @@ def save_data(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: build a masking context
+# CONTEXT
 # ══════════════════════════════════════════════════════════════════════════════
 
 def make_context(
     *,
-    salt:          str = "",
-    seed:          Optional[int] = None,
-    partial_keep:  int = 4,
-    partial_side:  str = "right",
+    salt:         str = "",
+    seed:         Optional[int] = None,
+    partial_keep: int = 4,
+    partial_side: str = "right",
 ) -> MaskingContext:
     """
     Build a plain (non-reversible) ``MaskingContext``.
 
-    Parameters
-    ----------
-    salt          : added to every value before hashing (``Strategy.hash``)
-    seed          : fixed random seed for reproducible fake data
-    partial_keep  : number of characters to keep for ``Strategy.partial``
-    partial_side  : ``"right"`` (keep last N) or ``"left"`` (keep first N)
-
     Example
     -------
-        from Iki_PII_Masker.facade import make_context
-
-        ctx = make_context(seed=42)                          # reproducible fakes
-        ctx = make_context(salt="pepper", partial_keep=4)   # hash + partial
+        ctx = make_context(seed=42)
+        ctx = make_context(salt="pepper", partial_keep=4)
     """
     return MaskingContext(
         salt=salt,
@@ -206,21 +285,14 @@ def make_context(
     )
 
 
-def make_reversible_context(
-    secret: str,
-    **kwargs: Any,
-) -> MaskingContext:
+def make_reversible_context(secret: str, **kwargs: Any) -> MaskingContext:
     """
-    Build a ``MaskingContext`` that encrypts every masked value with
-    AES-256-GCM so it can be recovered later via ``unmask_dataframe``.
+    Build a ``MaskingContext`` that AES-256-GCM encrypts every masked value.
 
-    The key is derived from *secret* automatically.  Any additional
-    keyword arguments are forwarded to ``make_context``.
+    The key is derived from *secret* automatically.
 
     Example
     -------
-        from Iki_PII_Masker.facade import make_reversible_context, mask_dataframe
-
         ctx = make_reversible_context("my-production-secret-2024")
         mask_dataframe(adapter, "email:user_id", Strategy.redact, ctx)
     """
@@ -237,20 +309,18 @@ def make_reversible_context(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: derive an encryption key
+# CRYPTO
 # ══════════════════════════════════════════════════════════════════════════════
 
 def derive_encryption_key(secret: str) -> bytes:
     """
-    Derive a 32-byte AES-256 key from an arbitrary *secret* string.
+    Derive a 32-byte AES-256 key from *secret*.
 
-    Use this when you need the raw key bytes — e.g. to call
-    ``unmask_dataframe`` after loading a previously masked file.
+    Use when you need the raw key bytes for ``unmask_dataframe`` after
+    loading a previously masked file.
 
     Example
     -------
-        from Iki_PII_Masker.facade import derive_encryption_key, unmask_dataframe
-
         key = derive_encryption_key("my-production-secret-2024")
         unmask_dataframe(adapter, ["email"], key)
     """
@@ -258,25 +328,18 @@ def derive_encryption_key(secret: str) -> bytes:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: create a data adapter
+# ADAPTERS — standard
 # ══════════════════════════════════════════════════════════════════════════════
 
 def create_adapter(engine: Engine | str = Engine.polars) -> BaseDataFrameAdapter:
     """
     Instantiate the right adapter for the given *engine*.
 
-    *engine* can be an ``Engine`` enum value or a plain string
+    Accepts ``Engine`` enum values or plain strings
     (``"polars"``, ``"pandas"``, ``"duckdb"``).
-
-    Polars  — best general-purpose choice; fast, low memory
-    Pandas  — use when the rest of your pipeline is already pandas
-              or when reading Excel files (.xlsx)
-    DuckDB  — use for files larger than RAM (streaming scans)
 
     Example
     -------
-        from Iki_PII_Masker.facade import create_adapter, Engine
-
         adapter = create_adapter(Engine.polars)
         adapter = create_adapter("duckdb")
     """
@@ -286,7 +349,106 @@ def create_adapter(engine: Engine | str = Engine.polars) -> BaseDataFrameAdapter
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: report results
+# ADAPTERS — SQLAlchemy (live database)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def create_sql_adapter(
+    url:        str,
+    table:      str,
+    id_column:  str = "id",
+    chunk_size: int = 500,
+) -> BaseDataFrameAdapter:
+    """
+    Mask data in a live relational database table via SQLAlchemy.
+
+    Requires:  ``pip install sqlalchemy``
+    Plus the driver for your database:
+        PostgreSQL → ``pip install psycopg2-binary``
+        MySQL      → ``pip install pymysql``
+        SQLite     → built-in, no extra install
+
+    Parameters
+    ----------
+    url        : SQLAlchemy connection URL
+                 ``"sqlite:///mydb.sqlite"``
+                 ``"postgresql+psycopg2://user:pass@host/db"``
+                 ``"mysql+pymysql://user:pass@host/db"``
+    table      : table name to read and update
+    id_column  : primary key column used in UPDATE WHERE clause  (default "id")
+    chunk_size : rows per commit batch  (default 500)
+
+    Usage
+    -----
+        adapter = create_sql_adapter("sqlite:///data.db", "users")
+        mask_dataframe(adapter, "email:phone", Strategy.fake)
+        save_data(adapter)   # writes UPDATEs back to the database
+    """
+    from .adapters.sqlalchemy_adapter import SQLAlchemyAdapter
+    return SQLAlchemyAdapter(
+        url=url, table=table, id_column=id_column, chunk_size=chunk_size
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADAPTERS — XML
+# ══════════════════════════════════════════════════════════════════════════════
+
+def create_xml_adapter(
+    xpath:      str = "//*",
+    pii_fields: list[str] = None,
+) -> BaseDataFrameAdapter:
+    """
+    Mask PII fields inside an XML document using XPath row selection.
+
+    Parameters
+    ----------
+    xpath       : XPath expression selecting the repeating row elements
+                  e.g. ``"//user"``, ``"//record"``, ``".//row"``
+    pii_fields  : child element names (or attribute names) to treat as columns
+                  e.g. ``["email", "phone", "full_name"]``
+
+    Usage
+    -----
+        adapter = create_xml_adapter("//user", ["email", "phone"])
+        load_data(adapter, Path("users.xml"))
+        mask_dataframe(adapter, "email:phone", Strategy.fake)
+        save_data(adapter, Path("masked.xml"))
+    """
+    return XMLAdapter(xpath=xpath, pii_fields=pii_fields or [])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADAPTERS — JSONPath
+# ══════════════════════════════════════════════════════════════════════════════
+
+def create_jsonpath_adapter(paths: dict[str, str]) -> BaseDataFrameAdapter:
+    """
+    Mask values at JSONPath locations inside a nested JSON document.
+
+    Requires:  ``pip install jsonpath-ng``
+
+    Parameters
+    ----------
+    paths : mapping of logical column name → JSONPath expression
+            e.g. ``{"email": "$.users[*].contact.email",
+                    "phone": "$.users[*].contact.phone"}``
+
+    Usage
+    -----
+        adapter = create_jsonpath_adapter({
+            "email": "$.users[*].email",
+            "phone": "$.users[*].phone",
+        })
+        load_data(adapter, Path("data.json"))
+        mask_dataframe(adapter, "email:phone", Strategy.redact)
+        save_data(adapter, Path("masked.json"))
+    """
+
+    return JSONPathAdapter(paths=paths)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
 def report_detection(
@@ -297,56 +459,63 @@ def report_detection(
     samples:     int = 3,
 ) -> None:
     """
-    Print a Rich table showing every column, its detected PII type, and
-    sample values.  Suggests a CLI command for the detected columns.
+    Print a Rich table of detected PII columns with sample values.
 
     Example
     -------
-        from Iki_PII_Masker.facade import detect_pii, report_detection
-
         found = detect_pii(adapter.columns)
-        report_detection(adapter, found, Path("data.csv"), samples=2)
+        report_detection(adapter, found, Path("data.csv"))
     """
     Reporter.detect_report(adapter, detected, source_file, samples)
 
 
 def report_masking(
-    adapter:   BaseDataFrameAdapter,
-    col_map:   dict[str, Optional[PIIType]],
-    strategy:  Strategy,
-    elapsed:   float,
+    adapter:  BaseDataFrameAdapter,
+    col_map:  dict[str, Optional[PIIType]],
+    strategy: Strategy,
+    elapsed:  float,
     *,
-    dry_run:   bool = False,
+    dry_run:  bool = False,
 ) -> None:
     """
-    Print a Rich masking-summary table with column names, PII types,
-    strategy used, rows affected, and elapsed time.
+    Print a Rich masking-summary table.
 
     Example
     -------
-        from Iki_PII_Masker.facade import report_masking, Strategy
-
         report_masking(adapter, col_map, Strategy.fake, elapsed)
     """
     Reporter.masking_report(
         col_map, strategy, adapter.row_count(), elapsed, dry_run)
 
 
-# ── raw types re-exported for type hints & isinstance checks ──────────────────
+# ── raw types re-exported for type hints ──────────────────────────────────────
 __all__ = [
-    # features
+    # detect
     "detect_pii",
+    "detect_pii_by_value",
+    # mask / unmask
     "mask_dataframe",
     "unmask_dataframe",
+    # i/o
     "load_data",
     "save_data",
+    # context
     "make_context",
     "make_reversible_context",
+    # crypto
     "derive_encryption_key",
+    # adapters
     "create_adapter",
+    "create_sql_adapter",
+    "create_xml_adapter",
+    "create_jsonpath_adapter",
+    # profiles
+    "ProfileConfig",
+    "ColumnRuleMap",
+    # report
     "report_detection",
     "report_masking",
-    # types / enums (needed for arguments)
+    # types / enums
     "Strategy",
     "Engine",
     "FileFormat",
@@ -354,4 +523,5 @@ __all__ = [
     "PIIRegistry",
     "MaskingContext",
     "BaseDataFrameAdapter",
+    "ValuePatternDetector",
 ]
