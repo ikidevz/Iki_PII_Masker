@@ -94,7 +94,7 @@ def main() -> None:
     print(f"PII columns: full_name, email, phone, dob, ssn, address, ip_address, "
           f"credit_card, user_id, password")
     print(f"\nNext step:")
-    print(f"  python pii_masker.py detect examples/data/sample.csv")
+    print(f"  python examples/run_examples.py")
 
 
 if __name__ == "__main__":

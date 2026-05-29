@@ -2,9 +2,9 @@
 
 > **Do one thing well: mask PII data.**
 
-A production-grade, pipe-friendly CLI tool for data engineers and analysts who
-need to sanitize datasets fast — without wrestling with config files or
-heavyweight frameworks.
+A production-grade, pipe-friendly CLI tool and Python library for data
+engineers and analysts who need to sanitize datasets fast — without wrestling
+with config files or heavyweight frameworks.
 
 ```bash
 pii_masker mask data.csv --auto --strategy fake -o clean.csv
@@ -29,6 +29,7 @@ pii_masker mask data.csv --auto --strategy fake -o clean.csv
 | **Reproducible fakes**   | `--seed` for deterministic output in CI/testing            |
 | **Dry run + report**     | Preview masking plan before touching any data              |
 | **PII detector**         | `detect` subcommand scans columns and prints sample values |
+| **Python façade API**    | Import by feature — no internal sub-packages exposed       |
 
 ---
 
@@ -267,10 +268,183 @@ Options:
 
 ---
 
+## Python API
+
+Every feature is accessible as a clean Python API through the façade module.
+Import only what you need — no internal sub-packages, no internal classes.
+
+```python
+from Iki_PII_Masker.facade import detect_pii           # scan columns for PII
+from Iki_PII_Masker.facade import mask_dataframe        # apply any strategy
+from Iki_PII_Masker.facade import unmask_dataframe      # reverse AES masking
+from Iki_PII_Masker.facade import load_data, save_data  # file I/O
+from Iki_PII_Masker.facade import make_context, make_reversible_context
+from Iki_PII_Masker.facade import derive_encryption_key
+from Iki_PII_Masker.facade import create_adapter        # polars / pandas / duckdb
+from Iki_PII_Masker.facade import report_detection, report_masking
+from Iki_PII_Masker.facade import Strategy, Engine, FileFormat
+```
+
+### Façade feature reference
+
+| Feature                                               | What it does                                                           |
+| ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| `detect_pii(columns)`                                 | Scan a column list → `{col: PIIType}` for every PII match              |
+| `mask_dataframe(adapter, columns, strategy, context)` | Apply a strategy to named columns; returns elapsed seconds             |
+| `unmask_dataframe(adapter, columns, key)`             | Reverse AES-256-GCM masking in-place                                   |
+| `load_data(adapter, source, fmt)`                     | Load a file, path, `BytesIO`, or `None` (stdin) into an adapter        |
+| `save_data(adapter, dest, fmt)`                       | Write adapter data to a file, `BytesIO`, or `None` (stdout)            |
+| `make_context(**kwargs)`                              | Build a plain `MaskingContext` (salt, seed, partial options)           |
+| `make_reversible_context(secret)`                     | Build a context that AES-encrypts every value; key derived from secret |
+| `derive_encryption_key(secret)`                       | Derive 32-byte AES key from a secret string                            |
+| `create_adapter(engine)`                              | Instantiate a Polars, Pandas, or DuckDB adapter                        |
+| `report_detection(adapter, detected, file)`           | Print Rich PII detection table with sample values                      |
+| `report_masking(adapter, col_map, strategy, elapsed)` | Print Rich masking summary table                                       |
+
+### Python API examples
+
+**Detect PII and print a report:**
+
+```python
+from Iki_PII_Masker.facade import create_adapter, load_data, detect_pii, report_detection
+from Iki_PII_Masker.facade import Engine
+from pathlib import Path
+
+adapter  = create_adapter(Engine.polars)
+load_data(adapter, Path("data.csv"))
+
+detected = detect_pii(adapter.columns)
+report_detection(adapter, detected, Path("data.csv"), samples=3)
+```
+
+**Mask with fake data (reproducible):**
+
+```python
+from Iki_PII_Masker.facade import create_adapter, load_data, save_data
+from Iki_PII_Masker.facade import mask_dataframe, make_context
+from Iki_PII_Masker.facade import Strategy, Engine
+from pathlib import Path
+
+adapter = create_adapter(Engine.polars)
+load_data(adapter, Path("data.csv"))
+mask_dataframe(adapter, "email:full_name:phone", Strategy.fake, make_context(seed=42))
+save_data(adapter, Path("masked.csv"))
+```
+
+**Auto-detect and redact:**
+
+```python
+mask_dataframe(adapter, None, Strategy.redact, auto=True)
+```
+
+**Hash with salt:**
+
+```python
+mask_dataframe(adapter, "user_id:email", Strategy.hash, make_context(salt="pepper_2024"))
+```
+
+**Partial masking — keep last 4 digits:**
+
+```python
+mask_dataframe(adapter, "credit_card:phone", Strategy.partial,
+               make_context(partial_keep=4, partial_side="right"))
+```
+
+**Null out sensitive columns:**
+
+```python
+mask_dataframe(adapter, "ssn:dob:password", Strategy.null)
+```
+
+**Reversible masking — mask then restore:**
+
+```python
+from Iki_PII_Masker.facade import (
+    create_adapter, load_data, save_data,
+    mask_dataframe, unmask_dataframe,
+    make_reversible_context, derive_encryption_key,
+    Strategy, Engine,
+)
+from pathlib import Path
+
+SECRET = "my-production-secret-2024"
+
+# Mask
+adapter = create_adapter(Engine.polars)
+load_data(adapter, Path("data.csv"))
+mask_dataframe(adapter, "email:user_id", Strategy.redact,
+               make_reversible_context(SECRET))
+save_data(adapter, Path("masked.csv"))
+
+# Restore
+key = derive_encryption_key(SECRET)
+adapter2 = create_adapter(Engine.polars)
+load_data(adapter2, Path("masked.csv"))
+unmask_dataframe(adapter2, ["email", "user_id"], key)
+save_data(adapter2, Path("restored.csv"))
+```
+
+**In-memory pipe (BytesIO):**
+
+```python
+import io
+from Iki_PII_Masker.facade import create_adapter, load_data, save_data
+from Iki_PII_Masker.facade import mask_dataframe, make_context
+from Iki_PII_Masker.facade import Strategy, Engine, FileFormat
+
+buf_in = io.BytesIO(open("data.csv", "rb").read())
+
+adapter = create_adapter(Engine.polars)
+load_data(adapter, buf_in, FileFormat.csv)
+mask_dataframe(adapter, "email:full_name", Strategy.fake, make_context(seed=99))
+
+buf_out = io.BytesIO()
+save_data(adapter, buf_out, FileFormat.csv)
+```
+
+**Multi-strategy pipeline on a single adapter:**
+
+```python
+# Pass 1 — fake names and emails
+mask_dataframe(adapter, "email:full_name", Strategy.fake, make_context(seed=42))
+
+# Pass 2 — partial card numbers
+mask_dataframe(adapter, "credit_card", Strategy.partial,
+               make_context(partial_keep=4, partial_side="right"))
+
+# Pass 3 — null out secrets
+mask_dataframe(adapter, "password:ssn", Strategy.null)
+```
+
+**Dry run with masking report:**
+
+```python
+from Iki_PII_Masker.facade import mask_dataframe, report_masking, Strategy
+import time
+
+t0      = time.perf_counter()
+mask_dataframe(adapter, None, Strategy.fake, auto=True, dry_run=True)
+elapsed = time.perf_counter() - t0
+
+report_masking(adapter, col_map, Strategy.fake, elapsed, dry_run=True)
+```
+
+**All three engines:**
+
+```python
+for engine in [Engine.polars, Engine.pandas, Engine.duckdb]:
+    adapter = create_adapter(engine)
+    load_data(adapter, Path("data.csv"))
+    mask_dataframe(adapter, "email:full_name", Strategy.redact)
+    save_data(adapter, Path(f"masked_{engine.value}.csv"))
+```
+
+---
+
 ## PII Auto-Detection
 
-The `--auto` flag and `detect` command match column names against regex
-heuristics for ten built-in PII types:
+The `--auto` flag, `detect` command, and `detect_pii()` function match column
+names against regex heuristics for ten built-in PII types:
 
 | PII Type      | Matched column names (examples)                            |
 | ------------- | ---------------------------------------------------------- |
@@ -288,17 +462,30 @@ heuristics for ten built-in PII types:
 Detection is heuristic. Always review `detect` output on new datasets before
 running a masked job in production.
 
+**Register a custom PII type at runtime:**
+
+```python
+from Iki_PII_Masker.facade import PIIRegistry, PIIType
+
+PIIRegistry.register(PIIType(
+    name="api_key",
+    patterns=[r"\bapi_key\b", r"\btoken\b", r"\baccess_key\b"],
+    redact_label="[TOKEN]",
+    faker_method="uuid4",
+))
+```
+
 ---
 
 ## Reversible Masking — How It Works
 
-When `--reversible --key <secret>` is passed:
+When `--reversible --key <secret>` is passed (or `make_reversible_context(secret)` in Python):
 
 1. A 32-byte AES key is derived from your secret using SHA-256.
 2. Each value is encrypted with **AES-256-GCM** using a random 96-bit nonce.
 3. The nonce + ciphertext + GCM tag are base64-encoded as `ENC:<token>` and
    stored in place of the original value.
-4. `pii_masker unmask --key <same-secret>` reverses step 3 → 1.
+4. `pii_masker unmask --key <same-secret>` (or `unmask_dataframe`) reverses step 3 → 1.
 
 Because each value gets a fresh random nonce, identical inputs produce
 different ciphertext — preventing frequency analysis on the masked dataset.
@@ -354,6 +541,42 @@ requires one new class.
 
 **Factory** — `StrategyFactory`, `AdapterFactory`, and `FormatRegistry`
 centralise all object creation so CLI functions contain zero branching logic.
+
+**Façade** — `facade.py` is the single public door into the Python API.
+It re-exports every capability as a named action function so callers never
+import from internal sub-packages directly.
+
+### Package layout
+
+```
+src/Iki_PII_Masker/
+├── facade.py            ← public Python API (import from here)
+├── service.py           ← MaskingService orchestrator
+├── reporter.py          ← Rich terminal output
+├── cli.py               ← argparse CLI entry point
+├── app.py               ← CLI command implementations
+├── config/
+│   ├── enums.py         ← Strategy, Engine, FileFormat
+│   ├── registry.py      ← PIIType, PIIRegistry
+│   ├── crypto.py        ← AES-256-GCM helpers
+│   ├── io.py            ← load/save routing
+│   └── utils.py         ← exit_error helper
+├── strategies/
+│   ├── base.py          ← BaseMaskingStrategy, MaskingContext
+│   ├── redact.py
+│   ├── fake.py
+│   ├── hash.py
+│   ├── partial.py
+│   ├── null.py
+│   ├── keep.py
+│   └── factory.py       ← StrategyFactory, FormatRegistry
+└── adapters/
+    ├── base.py           ← BaseDataFrameAdapter
+    ├── polars_adapter.py
+    ├── pandas_adapter.py
+    ├── duckdb_adapter.py
+    └── factory.py        ← AdapterFactory
+```
 
 ---
 
@@ -454,24 +677,25 @@ python examples/generate_sample_data.py --rows 50000  # larger dataset
 python examples/run_examples.py
 ```
 
-Covers every feature via the Python API directly:
+All 14 examples use the façade API — each example imports only the feature it
+needs:
 
-| #   | Example                                    |
-| --- | ------------------------------------------ |
-| 01  | Detect PII columns                         |
-| 02  | Redact explicit columns                    |
-| 03  | Auto-detect + redact                       |
-| 04  | Fake data with seed                        |
-| 05  | Hash with salt                             |
-| 06  | Partial masking — keep last 4 digits       |
-| 07  | Null out sensitive columns                 |
-| 08  | Reversible AES-256-GCM mask + unmask       |
-| 09  | All three engines side-by-side             |
-| 10  | Parquet round-trip                         |
-| 11  | Pipe simulation (stdin → stdout in memory) |
-| 12  | Dry run + masking report                   |
-| 13  | Keep strategy (whitelist passthrough)      |
-| 14  | Multi-strategy pipeline on one adapter     |
+| #   | Example                                    | Façade imports used                                  |
+| --- | ------------------------------------------ | ---------------------------------------------------- |
+| 01  | Detect PII columns                         | `detect_pii`, `report_detection`                     |
+| 02  | Redact explicit columns                    | `mask_dataframe`, `Strategy.redact`                  |
+| 03  | Auto-detect + redact                       | `mask_dataframe` with `auto=True`                    |
+| 04  | Fake data with seed                        | `mask_dataframe`, `make_context(seed=42)`            |
+| 05  | Hash with salt                             | `mask_dataframe`, `make_context(salt=...)`           |
+| 06  | Partial masking — keep last 4 digits       | `mask_dataframe`, `make_context(partial_keep=4)`     |
+| 07  | Null out sensitive columns                 | `mask_dataframe`, `Strategy.null`                    |
+| 08  | Reversible AES-256-GCM mask + unmask       | `make_reversible_context`, `unmask_dataframe`        |
+| 09  | All three engines side-by-side             | `create_adapter`, `Engine.polars/pandas/duckdb`      |
+| 10  | Parquet round-trip                         | `load_data`, `save_data`, `FileFormat.parquet`       |
+| 11  | Pipe simulation (stdin → stdout in memory) | `load_data(buf_in, FileFormat.csv)`                  |
+| 12  | Dry run + masking report                   | `mask_dataframe(dry_run=True)`, `report_masking`     |
+| 13  | Keep strategy (whitelist passthrough)      | `mask_dataframe`, `Strategy.keep`                    |
+| 14  | Multi-strategy pipeline on one adapter     | Multiple `mask_dataframe` passes on the same adapter |
 
 ### Bash examples
 
@@ -488,6 +712,7 @@ bash examples/run_examples.sh
 3. To register a new PII type, add a `PIIType(...)` entry to `PIIRegistry._types` — no other file needs to change.
 4. To add a new masking strategy, subclass `BaseMaskingStrategy`, implement `_apply()`, register it in `StrategyFactory`, and add the enum value to `Strategy`.
 5. To add a new engine, subclass `BaseDataFrameAdapter`, implement all 7 methods, and register it in `AdapterFactory` and the `Engine` enum.
+6. All public Python API additions go through `facade.py` — internal classes are not part of the public surface.
 
 ---
 

@@ -16,31 +16,31 @@ Prerequisites:
 """
 
 from __future__ import annotations
-from rich.rule import Rule
-from rich.console import Console
-from Iki_PII_Masker import (
-    AdapterFactory,
-    Engine,
-    FileFormat,
-    MaskingContext,
-    MaskingService,
-    PIIRegistry,
-    Reporter,
-    Strategy,
-    derive_key,
-    load_adapter,
-    save_adapter,
-)
+from Iki_PII_Masker.facade import Strategy, Engine, FileFormat  # enum types
+from Iki_PII_Masker.facade import report_detection, report_masking  # Rich output
+from Iki_PII_Masker.facade import create_adapter        # polars/pandas/duckdb
+from Iki_PII_Masker.facade import derive_encryption_key  # raw key bytes
+from Iki_PII_Masker.facade import make_context, make_reversible_context  # contexts
+from Iki_PII_Masker.facade import load_data, save_data  # file I/O
+from Iki_PII_Masker.facade import unmask_dataframe      # reverse AES masking
+from Iki_PII_Masker.facade import mask_dataframe        # apply any strategy
+from Iki_PII_Masker.facade import detect_pii           # scan columns for PII
 
 import io
 import sys
+import time
+import csv
 from pathlib import Path
+
+from rich.console import Console
+from rich.rule import Rule
 
 # ── ensure project root is importable ────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# ── import by feature from the façade ────────────────────────────────────────
 
 console = Console()
 DATA = ROOT / "examples" / "data" / "sample.csv"
@@ -56,8 +56,6 @@ def section(title: str) -> None:
 
 
 def show_csv_head(path: Path, rows: int = 3, cols: list[str] = None) -> None:
-    """Print the first N rows of a CSV, optionally filtering columns."""
-    import csv
     with open(path) as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
@@ -68,33 +66,6 @@ def show_csv_head(path: Path, rows: int = 3, cols: list[str] = None) -> None:
             console.print(f"  [dim]{dict(row)}[/]")
 
 
-def mask_and_save(
-    strategy:     Strategy,
-    columns:      str,
-    output_name:  str,
-    engine:       Engine = Engine.polars,
-    ctx:          MaskingContext = None,
-    source:       Path = DATA,
-    fmt:          FileFormat = FileFormat.csv,
-) -> Path:
-    """
-    Core helper — load → mask → save.
-    Returns the output path.
-    """
-    ctx = ctx or MaskingContext()
-    out = OUT / output_name
-    adapter = AdapterFactory.create(engine)
-
-    load_adapter(adapter, source, fmt)
-
-    svc = MaskingService(adapter, strategy, ctx)
-    col_map = svc.resolve_columns(columns, auto=False)
-    svc.run(col_map, dry_run=False, progress=False)
-
-    save_adapter(adapter, out, None, fmt)
-    return out
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Example 1 — Detect PII columns
 # ══════════════════════════════════════════════════════════════════════════════
@@ -102,15 +73,15 @@ def mask_and_save(
 def example_01_detect() -> None:
     section("01 · Detect PII columns")
 
-    adapter = AdapterFactory.create(Engine.polars)
-    load_adapter(adapter, DATA, FileFormat.csv)
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
 
-    detected = PIIRegistry.detect(adapter.columns)
+    detected = detect_pii(adapter.columns)
 
     console.print(f"  All columns   : {adapter.columns}")
     console.print(f"  Detected PII  : {list(detected.keys())}")
 
-    Reporter.detect_report(adapter, detected, DATA, samples=2)
+    report_detection(adapter, detected, DATA, samples=2)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -120,11 +91,12 @@ def example_01_detect() -> None:
 def example_02_redact() -> None:
     section("02 · Redact explicit columns")
 
-    out = mask_and_save(
-        strategy=Strategy.redact,
-        columns="email:full_name:phone",
-        output_name="02_redacted.csv",
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email:full_name:phone", Strategy.redact)
+
+    out = OUT / "02_redacted.csv"
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}")
     show_csv_head(out, cols=["email", "full_name", "phone"])
 
@@ -136,19 +108,12 @@ def example_02_redact() -> None:
 def example_03_auto_redact() -> None:
     section("03 · Auto-detect + redact")
 
-    adapter = AdapterFactory.create(Engine.polars)
-    load_adapter(adapter, DATA, FileFormat.csv)
-
-    ctx = MaskingContext()
-    svc = MaskingService(adapter, Strategy.redact, ctx)
-    col_map = svc.resolve_columns(None, auto=True)   # auto=True
-
-    console.print(f"  Auto-detected : {list(col_map.keys())}")
-
-    svc.run(col_map, dry_run=False, progress=False)
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, None, Strategy.redact, auto=True)
 
     out = OUT / "03_auto_redacted.csv"
-    save_adapter(adapter, out, None, FileFormat.csv)
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}")
     show_csv_head(out, cols=["email", "full_name", "id"])
 
@@ -160,12 +125,13 @@ def example_03_auto_redact() -> None:
 def example_04_fake() -> None:
     section("04 · Fake data — realistic replacements")
 
-    out = mask_and_save(
-        strategy=Strategy.fake,
-        columns="email:full_name:phone",
-        output_name="04_faked.csv",
-        ctx=MaskingContext(seed=42),   # reproducible
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email:full_name:phone", Strategy.fake,
+                   make_context(seed=42))
+
+    out = OUT / "04_faked.csv"
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}  (seed=42 → reproducible)")
     show_csv_head(out, cols=["email", "full_name", "phone"])
 
@@ -177,12 +143,13 @@ def example_04_fake() -> None:
 def example_05_hash() -> None:
     section("05 · Hash with salt")
 
-    out = mask_and_save(
-        strategy=Strategy.hash,
-        columns="user_id:email",
-        output_name="05_hashed.csv",
-        ctx=MaskingContext(salt="pepper_2024"),
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "user_id:email", Strategy.hash,
+                   make_context(salt="pepper_2024"))
+
+    out = OUT / "05_hashed.csv"
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}")
     show_csv_head(out, cols=["user_id", "email"])
 
@@ -194,12 +161,13 @@ def example_05_hash() -> None:
 def example_06_partial() -> None:
     section("06 · Partial masking — keep last 4 digits")
 
-    out = mask_and_save(
-        strategy=Strategy.partial,
-        columns="credit_card:phone",
-        output_name="06_partial.csv",
-        ctx=MaskingContext(partial_keep=4, partial_side="right"),
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "credit_card:phone", Strategy.partial,
+                   make_context(partial_keep=4, partial_side="right"))
+
+    out = OUT / "06_partial.csv"
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}")
     show_csv_head(out, cols=["credit_card", "phone"])
 
@@ -211,11 +179,12 @@ def example_06_partial() -> None:
 def example_07_null() -> None:
     section("07 · Null out sensitive columns")
 
-    out = mask_and_save(
-        strategy=Strategy.null,
-        columns="ssn:dob:password",
-        output_name="07_nulled.csv",
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "ssn:dob:password", Strategy.null)
+
+    out = OUT / "07_nulled.csv"
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}")
     show_csv_head(out, cols=["ssn", "dob", "password", "id"])
 
@@ -228,28 +197,26 @@ def example_08_reversible() -> None:
     section("08 · Reversible masking (AES-256-GCM) + unmask")
 
     SECRET = "my-production-secret-2024"
-    key_bytes = derive_key(SECRET)
-    ctx = MaskingContext(reversible=True, key_bytes=key_bytes)
 
     # ── mask ─────────────────────────────────────────────────────────────────
-    masked_path = mask_and_save(
-        strategy=Strategy.redact,
-        columns="email:user_id",
-        output_name="08_reversible.csv",
-        ctx=ctx,
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email:user_id", Strategy.redact,
+                   make_reversible_context(SECRET))
+
+    masked_path = OUT / "08_reversible.csv"
+    save_data(adapter, masked_path)
     console.print(f"  Masked → {masked_path.name}")
     show_csv_head(masked_path, cols=["email", "user_id"])
 
     # ── unmask ────────────────────────────────────────────────────────────────
-    adapter = AdapterFactory.create(Engine.polars)
-    load_adapter(adapter, masked_path, FileFormat.csv)
-
-    for col in ["email", "user_id"]:
-        adapter.apply_unmask(col, key_bytes)
+    key = derive_encryption_key(SECRET)
+    adapter2 = create_adapter(Engine.polars)
+    load_data(adapter2, masked_path)
+    unmask_dataframe(adapter2, ["email", "user_id"], key)
 
     restored_path = OUT / "08_restored.csv"
-    save_adapter(adapter, restored_path, None, FileFormat.csv)
+    save_data(adapter2, restored_path)
     console.print(f"  Restored → {restored_path.name}")
     show_csv_head(restored_path, cols=["email", "user_id"])
 
@@ -261,18 +228,16 @@ def example_08_reversible() -> None:
 def example_09_all_engines() -> None:
     section("09 · All engines — Polars / Pandas / DuckDB")
 
-    import time
-
     for engine in [Engine.polars, Engine.pandas, Engine.duckdb]:
         t0 = time.perf_counter()
-        out = mask_and_save(
-            strategy=Strategy.redact,
-            columns="email:full_name",
-            output_name=f"09_engine_{engine.value}.csv",
-            engine=engine,
-        )
-        elapsed = time.perf_counter() - t0
-        console.print(f"  [{engine.value:6}]  {out.name}  {elapsed:.3f}s")
+        adapter = create_adapter(engine)
+        load_data(adapter, DATA)
+        mask_dataframe(adapter, "email:full_name", Strategy.redact)
+
+        out = OUT / f"09_engine_{engine.value}.csv"
+        save_data(adapter, out)
+        console.print(
+            f"  [{engine.value:6}]  {out.name}  {time.perf_counter()-t0:.3f}s")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -283,22 +248,17 @@ def example_10_parquet() -> None:
     section("10 · Parquet round-trip")
 
     src = ROOT / "examples" / "data" / "sample.parquet"
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, src, FileFormat.parquet)
+    mask_dataframe(adapter, None, Strategy.redact, auto=True)
+
     out = OUT / "10_masked.parquet"
-
-    adapter = AdapterFactory.create(Engine.polars)
-    load_adapter(adapter, src, FileFormat.parquet)
-
-    svc = MaskingService(adapter, Strategy.redact, MaskingContext())
-    col_map = svc.resolve_columns(None, auto=True)
-    svc.run(col_map, dry_run=False, progress=False)
-
-    save_adapter(adapter, out, None, FileFormat.parquet)
+    save_data(adapter, out)
     console.print(f"  Input  → sample.parquet  ({adapter.row_count()} rows)")
     console.print(f"  Output → {out.name}")
 
-    # Reload and verify
-    verify = AdapterFactory.create(Engine.polars)
-    load_adapter(verify, out, FileFormat.parquet)
+    verify = create_adapter(Engine.polars)
+    load_data(verify, out, FileFormat.parquet)
     console.print(f"  email after mask : {verify.sample_values('email', 2)}")
 
 
@@ -309,22 +269,15 @@ def example_10_parquet() -> None:
 def example_11_pipe_simulation() -> None:
     section("11 · Pipe simulation (stdin → stdout)")
 
-    # Read CSV into bytes (simulates: cat data.csv | pii_masker ...)
-    raw_bytes = DATA.read_bytes()
-    buf_in = io.BytesIO(raw_bytes)
+    buf_in = io.BytesIO(DATA.read_bytes())
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, buf_in, FileFormat.csv)
+    mask_dataframe(adapter, "email:full_name", Strategy.fake,
+                   make_context(seed=99))
 
-    adapter = AdapterFactory.create(Engine.polars)
-    adapter.load(buf_in, FileFormat.csv)
-
-    svc = MaskingService(adapter, Strategy.fake, MaskingContext(seed=99))
-    col_map = svc.resolve_columns("email:full_name", auto=False)
-    svc.run(col_map, dry_run=False, progress=False)
-
-    # Write to bytes buffer (simulates stdout)
     buf_out = io.BytesIO()
-    adapter.save(buf_out, FileFormat.csv)
+    save_data(adapter, buf_out, FileFormat.csv)
 
-    # Show first 3 lines of the in-memory output
     lines = buf_out.getvalue().decode().splitlines()
     console.print("  In-memory CSV output (first 3 rows):")
     for line in lines[:4]:
@@ -338,23 +291,21 @@ def example_11_pipe_simulation() -> None:
 def example_12_dry_run() -> None:
     section("12 · Dry run + masking report (no file written)")
 
-    import time
+    from Iki_PII_Masker.service import MaskingService   # needed for col_map only
 
-    adapter = AdapterFactory.create(Engine.polars)
-    load_adapter(adapter, DATA, FileFormat.csv)
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
 
-    ctx = MaskingContext()
+    ctx = make_context()
     svc = MaskingService(adapter, Strategy.fake, ctx)
     col_map = svc.resolve_columns(None, auto=True)
 
     t0 = time.perf_counter()
-    svc.run(col_map, dry_run=True, progress=False)   # dry_run=True
+    mask_dataframe(adapter, None, Strategy.fake, ctx,
+                   auto=True, dry_run=True)
     elapsed = time.perf_counter() - t0
 
-    Reporter.masking_report(
-        col_map, Strategy.fake,
-        adapter.row_count(), elapsed, dry_run=True,
-    )
+    report_masking(adapter, col_map, Strategy.fake, elapsed, dry_run=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -364,11 +315,12 @@ def example_12_dry_run() -> None:
 def example_13_keep() -> None:
     section("13 · Keep strategy — passthrough (whitelist)")
 
-    out = mask_and_save(
-        strategy=Strategy.keep,
-        columns="id:revenue:department",
-        output_name="13_kept.csv",
-    )
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "id:revenue:department", Strategy.keep)
+
+    out = OUT / "13_kept.csv"
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}  (values unchanged)")
     show_csv_head(out, cols=["id", "revenue", "department"])
 
@@ -380,29 +332,22 @@ def example_13_keep() -> None:
 def example_14_multi_strategy_pipeline() -> None:
     section("14 · Multi-strategy pipeline (one adapter, multiple passes)")
 
-    adapter = AdapterFactory.create(Engine.polars)
-    load_adapter(adapter, DATA, FileFormat.csv)
-
-    ctx = MaskingContext()
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
 
     # Pass 1 — fake: email + full_name
-    svc1 = MaskingService(adapter, Strategy.fake, MaskingContext(seed=42))
-    svc1.run(svc1.resolve_columns("email:full_name", auto=False),
-             dry_run=False, progress=False)
+    mask_dataframe(adapter, "email:full_name",
+                   Strategy.fake, make_context(seed=42))
 
     # Pass 2 — partial: credit_card (keep last 4)
-    svc2 = MaskingService(adapter, Strategy.partial,
-                          MaskingContext(partial_keep=4, partial_side="right"))
-    svc2.run(svc2.resolve_columns("credit_card", auto=False),
-             dry_run=False, progress=False)
+    mask_dataframe(adapter, "credit_card",
+                   Strategy.partial, make_context(partial_keep=4, partial_side="right"))
 
     # Pass 3 — null: password + ssn
-    svc3 = MaskingService(adapter, Strategy.null, ctx)
-    svc3.run(svc3.resolve_columns("password:ssn", auto=False),
-             dry_run=False, progress=False)
+    mask_dataframe(adapter, "password:ssn", Strategy.null)
 
     out = OUT / "14_multi_strategy.csv"
-    save_adapter(adapter, out, None, FileFormat.csv)
+    save_data(adapter, out)
     console.print(f"  Output → {out.name}")
     show_csv_head(out, cols=["email", "full_name",
                   "credit_card", "password", "ssn"])
