@@ -1,6 +1,7 @@
 **/__pycache__/
 logs/
 bin/
+dist/
 structure.py
 ARTICLE.MD
 .pytest_cache/

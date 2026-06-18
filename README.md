@@ -39,11 +39,8 @@ pii_masker mask data.csv --auto --strategy fake -o clean.csv
 ## Installation
 
 ```bash
-# Recommended: install from source in editable mode
-pip install -e .
-
-# Or from PyPI
-pip install pii-masker
+# from PyPI
+pip install iki-pii-masker
 ```
 
 **Requirements:** Python 3.9+
