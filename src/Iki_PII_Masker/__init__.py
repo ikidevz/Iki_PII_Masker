@@ -14,6 +14,7 @@ from .config import (
     encrypt_value,
     decrypt_value,
     ColumnRuleMap,
+    ProfileConfig,
     Strategy,
     Engine,
     FileFormat,
@@ -44,7 +45,6 @@ from .strategies import (
 from .service import MaskingService
 from .reporter import Reporter
 
-
 __all__ = [
     "BaseDataFrameAdapter",
     "AdapterFactory",
@@ -58,6 +58,7 @@ __all__ = [
     "encrypt_value",
     "decrypt_value",
     'ColumnRuleMap',
+    "ProfileConfig",
     "Strategy",
     "Engine",
     "FileFormat",

@@ -6,3 +6,4 @@ ARTICLE.MD
 .pytest_cache/
 examples/data/
 examples/output/
+.pypirc

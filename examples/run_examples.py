@@ -13,8 +13,13 @@ Prerequisites:
 """
 
 from __future__ import annotations
-from Iki_PII_Masker.facade import Strategy, Engine, FileFormat      # enum types
-from Iki_PII_Masker.facade import ProfileConfig, ColumnRuleMap      # rule profiles
+from Iki_PII_Masker import (
+    Strategy,
+    Engine,
+    FileFormat,
+    ProfileConfig,
+    ColumnRuleMap
+)
 from Iki_PII_Masker.facade import report_detection, report_masking  # Rich output
 from Iki_PII_Masker.facade import create_jsonpath_adapter           # nested JSON
 from Iki_PII_Masker.facade import create_xml_adapter                # XML documents

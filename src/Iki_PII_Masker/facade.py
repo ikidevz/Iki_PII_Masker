@@ -78,7 +78,6 @@ from .config.registry import PIIType, PIIRegistry
 from .config.crypto import derive_key
 from .config.io import load_adapter as _load_adapter, save_adapter as _save_adapter
 from .config.value_detector import ValuePatternDetector
-from .config.profile import ProfileConfig, ColumnRuleMap
 from .strategies.base import MaskingContext
 from .adapters.base import BaseDataFrameAdapter
 from .adapters.factory import AdapterFactory
@@ -486,42 +485,3 @@ def report_masking(
     """
     Reporter.masking_report(
         col_map, strategy, adapter.row_count(), elapsed, dry_run)
-
-
-# ── raw types re-exported for type hints ──────────────────────────────────────
-__all__ = [
-    # detect
-    "detect_pii",
-    "detect_pii_by_value",
-    # mask / unmask
-    "mask_dataframe",
-    "unmask_dataframe",
-    # i/o
-    "load_data",
-    "save_data",
-    # context
-    "make_context",
-    "make_reversible_context",
-    # crypto
-    "derive_encryption_key",
-    # adapters
-    "create_adapter",
-    "create_sql_adapter",
-    "create_xml_adapter",
-    "create_jsonpath_adapter",
-    # profiles
-    "ProfileConfig",
-    "ColumnRuleMap",
-    # report
-    "report_detection",
-    "report_masking",
-    # types / enums
-    "Strategy",
-    "Engine",
-    "FileFormat",
-    "PIIType",
-    "PIIRegistry",
-    "MaskingContext",
-    "BaseDataFrameAdapter",
-    "ValuePatternDetector",
-]
