@@ -1,6 +1,7 @@
 from typing import Any, Optional
 from .base import BaseDataFrameAdapter
 from ..config import FileFormat, PIIType, decrypt_value, exit_error
+from ..config.vault.base import BaseTokenVault
 from ..strategies import BaseMaskingStrategy, MaskingContext
 
 import io
@@ -115,6 +116,28 @@ class DuckDBAdapter(BaseDataFrameAdapter):
         ]
         arrays = [
             pa.array(decrypted) if i == idx else arrow_tbl.column(i)
+            for i in range(arrow_tbl.num_columns)
+        ]
+        new_table = pa.table({arrow_tbl.schema.field(i).name: arrays[i]
+                              for i in range(arrow_tbl.num_columns)})
+        self._rel = self._conn().from_arrow(new_table)
+
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
+    ) -> None:
+        import pyarrow as pa
+        arrow_tbl = self._to_arrow()
+        idx = list(self._rel.columns).index(col)
+        values = arrow_tbl.column(idx).to_pylist()
+        reversed_values = [
+            token_vault.reverse(str(v), namespace) if v is not None else None
+            for v in values
+        ]
+        arrays = [
+            pa.array(reversed_values) if i == idx else arrow_tbl.column(i)
             for i in range(arrow_tbl.num_columns)
         ]
         new_table = pa.table({arrow_tbl.schema.field(i).name: arrays[i]

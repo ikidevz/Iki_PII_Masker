@@ -43,6 +43,7 @@ from .base import BaseDataFrameAdapter
 from ..config.crypto import decrypt_value
 from ..config.enums import FileFormat
 from ..config.registry import PIIType
+from ..config.vault.base import BaseTokenVault
 from ..strategies import BaseMaskingStrategy, MaskingContext
 
 
@@ -164,6 +165,16 @@ class SQLAlchemyAdapter(BaseDataFrameAdapter):
                     kms_region=kms_region,
                     kms_encryption_context=kms_encryption_context,
                 )
+
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
+    ) -> None:
+        for row in self._rows:
+            if row[col] is not None:
+                row[col] = token_vault.reverse(str(row[col]), namespace)
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         return [r[col] for r in self._rows if r.get(col) is not None][:n]

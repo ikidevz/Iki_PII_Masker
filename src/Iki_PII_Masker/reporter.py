@@ -57,12 +57,14 @@ class Reporter:
         input_file: Optional[Path] = None,
         samples: int = 3,
         redact_samples: bool = True,      # Secure by default
+        source_labels: dict[str, str] | None = None,
     ) -> None:
         """Print PII detection results with optional redaction of sample values."""
         table = Table(title="PII Detection Results",
                       border_style="magenta", show_lines=True)
         table.add_column("Column", style="bold white")
         table.add_column("PII Type", style="yellow")
+        table.add_column("Source", style="cyan")
         table.add_column("Sample Values", style="dim")
 
         redactor = RedactStrategy() if redact_samples else None
@@ -89,9 +91,14 @@ class Reporter:
             if len(sample_str) > 80:
                 sample_str = sample_str[:77] + "..."
 
+            source = "—"
+            if source_labels is not None and col in source_labels:
+                source = source_labels[col]
+
             table.add_row(
                 col,
                 pii_type.name if pii_type else "—",
+                source,
                 sample_str,
             )
 

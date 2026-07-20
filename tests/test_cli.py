@@ -352,6 +352,118 @@ def test_reversible_cipher_choice_round_trip(csv_file, tmp_path):
     assert csv_col(restored, "email") == original
 
 
+def test_mask_with_vault_persistence(csv_file, tmp_path):
+    vault_path = tmp_path / "vault.db"
+    masked_one = tmp_path / "masked_one.csv"
+    masked_two = tmp_path / "masked_two.csv"
+
+    run("mask", str(csv_file), "-c", "email", "-s", "tokenize",
+        "--vault", "--vault-path", str(vault_path), "--key", "vault-secret",
+        "-o", str(masked_one))
+    run("mask", str(csv_file), "-c", "email", "-s", "tokenize",
+        "--vault", "--vault-path", str(vault_path), "--key", "vault-secret",
+        "-o", str(masked_two))
+
+    assert csv_col(masked_one, "email") == csv_col(masked_two, "email")
+
+
+def test_unmask_with_vault_token_reversal(csv_file, tmp_path):
+    vault_path = tmp_path / "vault.db"
+    masked = tmp_path / "masked.csv"
+    restored = tmp_path / "restored.csv"
+    original = csv_col(csv_file, "email")
+
+    run("mask", str(csv_file), "-c", "email", "-s", "tokenize",
+        "--vault", "--vault-path", str(vault_path), "--key", "vault-secret",
+        "-o", str(masked))
+
+    r = run("unmask", str(masked), "-c", "email",
+            "--vault", "--vault-path", str(
+                vault_path), "--key", "vault-secret",
+            "-o", str(restored))
+    assert r.returncode == 0
+    assert csv_col(restored, "email") == original
+
+
+def test_mask_with_sqlalchemy_vault_url(csv_file, tmp_path):
+    pytest.importorskip("sqlalchemy")
+    vault_path = tmp_path / "vault_sqlalchemy.db"
+    vault_url = f"sqlite:///{vault_path}"
+    masked = tmp_path / "masked_sqlalchemy.csv"
+
+    r = run("mask", str(csv_file), "-c", "email", "-s", "tokenize",
+            "--vault", "--vault-backend", "sqlalchemy",
+            "--vault-url", vault_url,
+            "--key", "vault-secret",
+            "-o", str(masked))
+    assert r.returncode == 0
+    assert all(v.startswith("TOK-") for v in csv_col(masked, "email"))
+
+
+def test_unmask_with_sqlalchemy_vault_url(csv_file, tmp_path):
+    pytest.importorskip("sqlalchemy")
+    vault_path = tmp_path / "vault_sqlalchemy.db"
+    vault_url = f"sqlite:///{vault_path}"
+    masked = tmp_path / "masked_sqlalchemy.csv"
+    restored = tmp_path / "restored_sqlalchemy.csv"
+
+    run("mask", str(csv_file), "-c", "email", "-s", "tokenize",
+        "--vault", "--vault-backend", "sqlalchemy",
+        "--vault-url", vault_url,
+        "--key", "vault-secret",
+        "-o", str(masked))
+
+    r = run("unmask", str(masked), "-c", "email",
+            "--vault", "--vault-backend", "sqlalchemy",
+            "--vault-url", vault_url,
+            "--key", "vault-secret",
+            "-o", str(restored))
+    assert r.returncode == 0
+    assert csv_col(restored, "email") == csv_col(csv_file, "email")
+
+
+def test_unmask_with_local_key_provider(csv_file, tmp_path):
+    masked = tmp_path / "masked.csv"
+    restored = tmp_path / "restored.csv"
+    original = csv_col(csv_file, "email")
+
+    run("mask", str(csv_file), "-c", "email", "-s", "redact",
+        "--reversible", "--key-provider", "local",
+        "--key", "secret123", "-o", str(masked))
+    assert all(v.startswith("ENC:") for v in csv_col(masked, "email"))
+
+    r = run("unmask", str(masked), "-c", "email",
+            "--key-provider", "local", "--key", "secret123",
+            "-o", str(restored))
+    assert r.returncode == 0
+    assert csv_col(restored, "email") == original
+
+
+def test_key_provider_config_file_resolves_secret(csv_file, tmp_path):
+    config_dir = tmp_path / ".pii_masker"
+    config_dir.mkdir()
+    config_path = config_dir / "config.toml"
+    config_path.write_text('key = "secret123"')
+
+    masked = tmp_path / "masked.csv"
+    restored = tmp_path / "restored.csv"
+    original = csv_col(csv_file, "email")
+
+    r = run("mask", str(csv_file), "-c", "email", "-s", "redact",
+            "--reversible", "--key-provider", "local",
+            "--key-provider-config", str(config_path),
+            "-o", str(masked))
+    assert r.returncode == 0
+    assert all(v.startswith("ENC:") for v in csv_col(masked, "email"))
+
+    r = run("unmask", str(masked), "-c", "email",
+            "--key-provider", "local",
+            "--key-provider-config", str(config_path),
+            "-o", str(restored))
+    assert r.returncode == 0
+    assert csv_col(restored, "email") == original
+
+
 def test_unmask_wrong_key_exits(csv_file, tmp_path):
     masked = tmp_path / "masked.csv"
     run("mask", str(csv_file), "-c", "email", "-s", "redact",

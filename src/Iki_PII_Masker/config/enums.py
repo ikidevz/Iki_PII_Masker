@@ -20,6 +20,7 @@ class Strategy(str, Enum):
     bucketize = "bucketize"
     generalize = "generalize"
     mask_format = "mask_format"
+    ner_redact = "ner_redact"
 
 
 class Engine(str, Enum):
@@ -29,6 +30,11 @@ class Engine(str, Enum):
     sql = "sql"       # SQLAlchemyAdapter
     xml = "xml"       # XMLAdapter
     jsonpath = "jsonpath"  # JSONPathAdapter
+
+
+class VaultBackend(str, Enum):
+    sqlite = "sqlite"
+    sqlalchemy = "sqlalchemy"
 
 
 class FileFormat(str, Enum):

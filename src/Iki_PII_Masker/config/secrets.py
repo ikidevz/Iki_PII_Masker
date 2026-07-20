@@ -11,7 +11,7 @@ except ImportError:  # Python < 3.11
     tomllib = None
 
 
-def resolve_secret(cli_value: str | None) -> str:
+def resolve_secret(cli_value: str | None, config_path: Path | str | None = None) -> str:
     """Resolve the reversible masking secret from CLI, env var, or user config."""
     if cli_value:
         return cli_value
@@ -19,14 +19,17 @@ def resolve_secret(cli_value: str | None) -> str:
     if env := os.environ.get("PII_MASKER_KEY"):
         return env
 
-    home = (
-        os.environ.get("PII_MASKER_HOME")
-        or os.environ.get("HOME")
-        or os.environ.get("USERPROFILE")
-        or (os.path.join(os.environ.get("HOMEDRIVE", ""), os.environ.get("HOMEPATH", "")) if os.environ.get("HOMEDRIVE") and os.environ.get("HOMEPATH") else None)
-    )
-    config_path = Path(home).expanduser() / ".pii_masker" / \
-        "config.toml" if home else Path.home() / ".pii_masker" / "config.toml"
+    if config_path:
+        config_path = Path(config_path).expanduser()
+    else:
+        home = (
+            os.environ.get("PII_MASKER_HOME")
+            or os.environ.get("HOME")
+            or os.environ.get("USERPROFILE")
+            or (os.path.join(os.environ.get("HOMEDRIVE", ""), os.environ.get("HOMEPATH", "")) if os.environ.get("HOMEDRIVE") and os.environ.get("HOMEPATH") else None)
+        )
+        config_path = Path(home).expanduser() / ".pii_masker" / \
+            "config.toml" if home else Path.home() / ".pii_masker" / "config.toml"
     if config_path.exists():
         if tomllib is None:
             exit_error(

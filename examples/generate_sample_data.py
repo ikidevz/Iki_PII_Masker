@@ -51,6 +51,7 @@ def generate(rows: int, seed: int) -> pl.DataFrame:
         "revenue":     [round(fake.pyfloat(min_value=100, max_value=50000, right_digits=2), 2)
                         for _ in range(rows)],
         "country":     [fake.country_code() for _ in range(rows)],
+        "notes":       [fake.sentence(nb_words=12) for _ in range(rows)],
         "created_at":  [str(fake.date_time_this_decade()) for _ in range(rows)],
     }
     return pl.DataFrame(data)
@@ -93,7 +94,7 @@ def main() -> None:
 
     print(f"\nColumns: {', '.join(df.columns)}")
     print(f"PII columns: full_name, email, phone, dob, ssn, address, ip_address, "
-          f"credit_card, user_id, password, age")
+          f"credit_card, user_id, password, age, notes")
     print(f"\nNext step:")
     print(f"  python examples/run_examples.py")
 

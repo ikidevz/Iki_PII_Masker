@@ -47,6 +47,13 @@ PREFIX_MAP = {
     "kms-envelope": "ENC-KMS:",
 }
 
+FF_FORMAT_ALPHABET = (
+    "0123456789"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "_-"
+)
+
 
 def derive_key(secret: str, salt: bytes = b"", iterations: int = 600_000) -> bytes:
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
@@ -162,8 +169,9 @@ def encrypt_value(
             import ecies
         except ImportError as exc:
             raise ImportError(
-                "ECIES support requires the optional 'ecies' dependency.") from exc
-        payload = ecies.encrypt(key_bytes, value.encode())
+                "ECIES support requires the optional 'eciespy' dependency.") from exc
+        public_key = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
+        payload = ecies.encrypt(public_key, value.encode())
     elif cipher_name == "ff1":
         try:
             import pyffx
@@ -171,7 +179,10 @@ def encrypt_value(
             raise ImportError(
                 "FF1 support requires the optional 'pyffx' dependency.") from exc
         ff = pyffx.String(
-            key_bytes, alphabet="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", length=len(value))
+            key_bytes,
+            alphabet=FF_FORMAT_ALPHABET,
+            length=len(value),
+        )
         payload = ff.encrypt(value).encode()
     elif cipher_name == "ff3-1":
         try:
@@ -180,7 +191,10 @@ def encrypt_value(
             raise ImportError(
                 "FF3-1 support requires the optional 'ff3' dependency.") from exc
         ff = ff3.FF3Cipher.withCustomAlphabet(
-            key_bytes, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            key_bytes.hex(),
+            "0000000000000000",
+            FF_FORMAT_ALPHABET,
+        )
         payload = ff.encrypt(value).encode()
     elif cipher_name == "kms-envelope":
         if not kms_key_id:
@@ -269,9 +283,10 @@ def decrypt_value(
             import ecies
         except ImportError as exc:
             raise ImportError(
-                "ECIES support requires the optional 'ecies' dependency.") from exc
+                "ECIES support requires the optional 'eciespy' dependency.") from exc
         raw = base64.urlsafe_b64decode(token[len("ENC-ECIES:"):])
-        return ecies.decrypt(key_bytes, raw).decode()
+        private_key = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
+        return ecies.decrypt(private_key, raw).decode()
 
     if token.startswith("ENC-FF1:"):
         try:
@@ -281,7 +296,10 @@ def decrypt_value(
                 "FF1 support requires the optional 'pyffx' dependency.") from exc
         raw = base64.urlsafe_b64decode(token[len("ENC-FF1:"):])
         ff = pyffx.String(
-            key_bytes, alphabet="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", length=len(raw))
+            key_bytes,
+            alphabet=FF_FORMAT_ALPHABET,
+            length=len(raw),
+        )
         return ff.decrypt(raw.decode())
 
     if token.startswith("ENC-FF3:"):
@@ -292,7 +310,10 @@ def decrypt_value(
                 "FF3-1 support requires the optional 'ff3' dependency.") from exc
         raw = base64.urlsafe_b64decode(token[len("ENC-FF3:"):])
         ff = ff3.FF3Cipher.withCustomAlphabet(
-            key_bytes, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            key_bytes.hex(),
+            "0000000000000000",
+            FF_FORMAT_ALPHABET,
+        )
         return ff.decrypt(raw.decode())
 
     if token.startswith("ENC-KMS:"):

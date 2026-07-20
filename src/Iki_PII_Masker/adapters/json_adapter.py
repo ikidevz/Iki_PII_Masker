@@ -37,6 +37,7 @@ from .base import BaseDataFrameAdapter
 from ..config.registry import PIIType
 from ..config.enums import FileFormat
 from ..config.crypto import decrypt_value
+from ..config.vault.base import BaseTokenVault
 from ..strategies.base import BaseMaskingStrategy, MaskingContext
 
 
@@ -141,6 +142,21 @@ class JSONPathAdapter(BaseDataFrameAdapter):
                     kms_encryption_context=kms_encryption_context,
                 )
                 match.full_path.update_or_create(self._document, unmasked)
+
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
+    ) -> None:
+        if col not in self._paths:
+            return
+        expr = self._parse_path(self._paths[col])
+        matches = expr.find(self._document)
+        for match in matches:
+            if match.value is not None:
+                reversed_val = token_vault.reverse(str(match.value), namespace)
+                match.full_path.update_or_create(self._document, reversed_val)
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         if col not in self._paths or not self._document:

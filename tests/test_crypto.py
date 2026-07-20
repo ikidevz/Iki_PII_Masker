@@ -49,6 +49,40 @@ def test_encrypt_decrypt_round_trip(cipher):
     assert decrypt_value(token, key) == "alice@example.com"
 
 
+def test_ff1_encrypt_decrypt_round_trip():
+    pytest.importorskip("pyffx")
+    key = derive_encryption_key("roundtrip")
+    for value in ["123456", "alice", "ABC123", "usr_1234"]:
+        token = encrypt_value(value, key, cipher="ff1")
+        assert token.startswith(PREFIX_MAP["ff1"])
+        assert decrypt_value(token, key) == value
+
+
+def test_ff3_encrypt_decrypt_round_trip():
+    pytest.importorskip("ff3")
+    key = derive_encryption_key("roundtrip")
+    for value in ["123456", "alice", "ABC123", "usr_1234"]:
+        token = encrypt_value(value, key, cipher="ff3-1")
+        assert token.startswith(PREFIX_MAP["ff3-1"])
+        assert decrypt_value(token, key) == value
+
+
+def test_ecies_encrypt_decrypt_round_trip():
+    pytest.importorskip("ecies")
+    from ecies.keys.private import PrivateKey
+
+    private_key = PrivateKey("secp256k1")
+    public_key = private_key.public_key
+    token = encrypt_value(
+        "alice@example.com",
+        public_key.to_hex().encode(),
+        cipher="ecies",
+    )
+    assert token.startswith(PREFIX_MAP["ecies"])
+    assert decrypt_value(
+        token, private_key.to_hex().encode()) == "alice@example.com"
+
+
 def test_kms_envelope_round_trip(monkeypatch):
     import Iki_PII_Masker.config.kms as kms_mod
 

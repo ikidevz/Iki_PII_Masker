@@ -16,6 +16,7 @@ from .facade import (
     make_context,
     make_reversible_context,
     derive_encryption_key,
+    detect_pii_by_ner,
 )
 
 from .config import (
@@ -56,7 +57,8 @@ from .strategies import (
     PerturbStrategy,
     BucketizeStrategy,
     MaskFormatStrategy,
-    TokenizeStrategy
+    TokenizeStrategy,
+    NERRedactStrategy,
 )
 
 from .service import MaskingService
@@ -93,6 +95,7 @@ __all__ = [
     "load_adapter",
     "save_adapter",
     'BaseMaskingStrategy',
+    'detect_pii_by_ner',
     'MaskingContext',
     'StrategyFactory',
     'FormatRegistry',

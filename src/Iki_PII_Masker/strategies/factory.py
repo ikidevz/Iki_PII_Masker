@@ -22,6 +22,7 @@ from .salted_hash import SaltedHashStrategy
 from .tokenize import TokenizeStrategy
 from .truncate import TruncateStrategy
 from .pseudonymize import PseudonymizeStrategy
+from .ner_redact import NERRedactStrategy
 from .base import BaseMaskingStrategy
 
 
@@ -81,6 +82,7 @@ class StrategyFactory:
             Strategy.bucketize:    BucketizeStrategy,
             Strategy.generalize:   GeneralizeStrategy,
             Strategy.mask_format:  MaskFormatStrategy,
+            Strategy.ner_redact:   NERRedactStrategy,
         }
 
         strategy_class = mapping.get(strategy)

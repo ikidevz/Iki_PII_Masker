@@ -78,6 +78,9 @@ from .config.registry import PIIType, PIIRegistry
 from .config.crypto import derive_key
 from .config.io import load_adapter as _load_adapter, save_adapter as _save_adapter
 from .config.value_detector import ValuePatternDetector
+from .config.ner_detector import detect_pii_by_ner as _detect_pii_by_ner
+from .config.vault.factory import create_vault
+from .config.keys.local_provider import LocalKeyProvider
 from .strategies.base import MaskingContext
 from .strategies.composite import CompositeStrategy
 from .adapters.base import BaseDataFrameAdapter
@@ -142,6 +145,28 @@ def detect_pii_by_value(
     return detector.detect(
         columns=adapter.columns,
         sample_fn=adapter.sample_values,
+        existing=existing,
+    )
+
+
+def detect_pii_by_ner(
+    adapter:     BaseDataFrameAdapter,
+    *,
+    sample_rows: int = 100,
+    threshold:   float = 0.3,
+    model:       str = "en_core_web_sm",
+    existing:    dict[str, PIIType] | None = None,
+) -> dict[str, PIIType]:
+    """
+    Scan actual cell values for NER-detected PII in free-text-like columns.
+
+    Returns the same shape as ``detect_pii_by_value`` so results can be merged.
+    """
+    return _detect_pii_by_ner(
+        adapter,
+        sample_rows=sample_rows,
+        threshold=threshold,
+        model=model,
         existing=existing,
     )
 
@@ -303,6 +328,9 @@ def make_context(
     kms_region:         str | None = None,
     kms_key_id:         str | None = None,
     kms_encryption_context: dict[str, str] | None = None,
+    token_vault:        Any | None = None,
+    vault_namespace:    str = "default",
+    key_provider:       Any | None = None,
 ) -> MaskingContext:
     """
     Build a plain (non-reversible) ``MaskingContext``.
@@ -315,6 +343,7 @@ def make_context(
     """
     return MaskingContext(
         key=key,
+        key_bytes=key_bytes,
         salt=salt,
         pbkdf2_iterations=pbkdf2_iterations,
         seed=seed,
@@ -331,6 +360,9 @@ def make_context(
         kms_region=kms_region,
         kms_key_id=kms_key_id,
         kms_encryption_context=kms_encryption_context,
+        token_vault=token_vault,
+        vault_namespace=vault_namespace,
+        key_provider=key_provider,
     )
 
 
@@ -365,6 +397,9 @@ def make_reversible_context(secret: str, salt: bytes = b"", **kwargs: Any) -> Ma
         kms_region=base.kms_region,
         kms_key_id=base.kms_key_id,
         kms_encryption_context=base.kms_encryption_context,
+        token_vault=base.token_vault,
+        vault_namespace=base.vault_namespace,
+        key_provider=base.key_provider,
     )
 
 
@@ -517,6 +552,7 @@ def report_detection(
     source_file: Optional[Path] = None,
     *,
     samples:     int = 3,
+    source_labels: dict[str, str] | None = None,
 ) -> None:
     """
     Print a Rich table of detected PII columns with sample values.
@@ -526,7 +562,8 @@ def report_detection(
         found = detect_pii(adapter.columns)
         report_detection(adapter, found, Path("data.csv"))
     """
-    Reporter.detect_report(adapter, detected, source_file, samples)
+    Reporter.detect_report(adapter, detected, source_file, samples,
+                           source_labels=source_labels)
 
 
 def report_masking(

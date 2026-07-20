@@ -17,6 +17,7 @@ from .shuffle import ShuffleStrategy
 from .anonymize import AnonymizeStrategy
 from .perturb import PerturbStrategy
 from .bucketize import BucketizeStrategy
+from .ner_redact import NERRedactStrategy
 from .mask_format import MaskFormatStrategy
 from .composite import CompositeStrategy
 
@@ -42,6 +43,7 @@ __all__ = [
     'AnonymizeStrategy',
     'PerturbStrategy',
     'BucketizeStrategy',
+    'NERRedactStrategy',
     'MaskFormatStrategy',
     'TokenizeStrategy',
     'CompositeStrategy'

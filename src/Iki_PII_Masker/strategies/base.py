@@ -30,6 +30,9 @@ class MaskingContext:
     kms_region:         str | None = None
     kms_key_id:         str | None = None
     kms_encryption_context: dict[str, str] | None = None
+    token_vault:        Any | None = None
+    vault_namespace:    str = "default"
+    key_provider:       Any | None = None
 
 
 class BaseMaskingStrategy(ABC):

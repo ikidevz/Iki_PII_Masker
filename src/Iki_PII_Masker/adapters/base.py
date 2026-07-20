@@ -1,9 +1,10 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional
-from ..strategies.base import BaseMaskingStrategy, MaskingContext
 from ..config.enums import FileFormat
 from ..config.registry import PIIType
+from ..config.vault.base import BaseTokenVault
+from ..strategies.base import BaseMaskingStrategy, MaskingContext
 
 
 class BaseDataFrameAdapter(ABC):
@@ -37,6 +38,14 @@ class BaseDataFrameAdapter(ABC):
         kms_provider: str | None = None,
         kms_region: str | None = None,
         kms_encryption_context: dict[str, str] | None = None,
+    ) -> None: ...
+
+    @abstractmethod
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
     ) -> None: ...
 
     @abstractmethod

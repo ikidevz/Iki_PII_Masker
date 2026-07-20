@@ -1,5 +1,6 @@
 from .base import BaseDataFrameAdapter
 from ..config import FileFormat, PIIType, decrypt_value
+from ..config.vault.base import BaseTokenVault
 from ..strategies import BaseMaskingStrategy, MaskingContext
 from typing import Any, Optional
 
@@ -58,6 +59,17 @@ class PandasAdapter(BaseDataFrameAdapter):
                 kms_region=kms_region,
                 kms_encryption_context=kms_encryption_context,
             ))
+
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
+    ) -> None:
+        self._df[col] = self._df[col].map(
+            lambda v: token_vault.reverse(
+                str(v), namespace) if v is not None else None
+        )
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         return self._df[col].dropna().tolist()[:n]

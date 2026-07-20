@@ -7,6 +7,7 @@ from .config import (
     SUPPORTED_REVERSIBLE_CIPHERS,
     Strategy,
     Engine,
+    VaultBackend,
     FileFormat,
     derive_key,
     resolve_secret,
@@ -14,6 +15,8 @@ from .config import (
     ProfileConfig,
     exit_error,
 )
+from .config.vault.factory import create_vault
+from .config.keys.local_provider import LocalKeyProvider
 from .config.crypto import _normalize_cipher
 from .facade import detect_pii, detect_pii_by_value
 from .strategies import MaskingContext
@@ -178,6 +181,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Verify the masked output contains no remaining PII.",
     )
     mask_p.add_argument(
+        "--vault", action="store_true",
+        help="Use a persistent token vault for tokenize/pseudonymize consistency.",
+    )
+    mask_p.add_argument(
+        "--vault-backend", choices=[v.value for v in VaultBackend], default=VaultBackend.sqlite.value,
+        help="Persistent vault backend (default: sqlite).",
+    )
+    mask_p.add_argument(
+        "--vault-path", default=None,
+        help="Path to the persistent token vault database file (sqlite backend only).",
+    )
+    mask_p.add_argument(
+        "--vault-url", default=None,
+        help="SQLAlchemy connection URL for the persistent token vault.",
+    )
+    mask_p.add_argument(
+        "--vault-table", default="pii_tokens",
+        help="Token vault table name.",
+    )
+    mask_p.add_argument(
+        "--vault-namespace", default="default",
+        help="Namespace for persistent token vault entries.",
+    )
+    mask_p.add_argument(
+        "--key-provider", choices=["local"], default=None,
+        help="Use a per-column key provider for reversible encryption.",
+    )
+    mask_p.add_argument(
+        "--key-provider-config", default=None,
+        help="Path to a TOML config file for key provider / secret resolution.",
+    )
+    mask_p.add_argument(
         "--no-progress", action="store_true",
         help="Disable the progress bar.",
     )
@@ -231,6 +266,38 @@ def _build_parser() -> argparse.ArgumentParser:
             "Specify multiple times."
         ),
     )
+    unmask_p.add_argument(
+        "--key-provider", choices=["local"], default=None,
+        help="Use a per-column key provider for reversible decryption.",
+    )
+    unmask_p.add_argument(
+        "--key-provider-config", default=None,
+        help="Path to a TOML config file for key provider / secret resolution.",
+    )
+    unmask_p.add_argument(
+        "--vault", action="store_true",
+        help="Use a persistent token vault to reverse tokenized/pseudonymized values.",
+    )
+    unmask_p.add_argument(
+        "--vault-backend", choices=[v.value for v in VaultBackend], default=VaultBackend.sqlite.value,
+        help="Persistent vault backend for token reversal (default: sqlite).",
+    )
+    unmask_p.add_argument(
+        "--vault-path", default=None,
+        help="Path to the persistent token vault database file (sqlite backend only).",
+    )
+    unmask_p.add_argument(
+        "--vault-url", default=None,
+        help="SQLAlchemy connection URL for the persistent token vault.",
+    )
+    unmask_p.add_argument(
+        "--vault-table", default="pii_tokens",
+        help="Token vault table name.",
+    )
+    unmask_p.add_argument(
+        "--vault-namespace", default="default",
+        help="Namespace for persistent token vault entries.",
+    )
     _add_engine_fmt(unmask_p)
 
     # ── detect ────────────────────────────────────────────────────────────────
@@ -252,6 +319,10 @@ def _build_parser() -> argparse.ArgumentParser:
     detect_p.add_argument(
         "--samples", type=int, default=3,
         help="Sample values to show per column (default: 3).",
+    )
+    detect_p.add_argument(
+        "--ner", action="store_true",
+        help="Enable NER-based detection for free-text columns."
     )
     _add_engine_fmt(detect_p)
 
@@ -301,7 +372,8 @@ def _cmd_mask(args: argparse.Namespace) -> None:
                     exit_error("--kms-key-id is required for kms-envelope.")
                 key_bytes = b""
             else:
-                secret = resolve_secret(args.key)
+                secret = resolve_secret(
+                    args.key, config_path=args.key_provider_config)
                 key_bytes = derive_key(secret, salt=ctx.salt.encode("utf-8"))
             ctx.key_bytes = key_bytes
             ctx.reversible = True
@@ -312,6 +384,29 @@ def _cmd_mask(args: argparse.Namespace) -> None:
             ctx.kms_encryption_context = _parse_kms_encryption_context(
                 args.kms_encryption_context
             )
+        if args.vault:
+            master_secret = resolve_secret(
+                args.key, config_path=args.key_provider_config)
+            try:
+                vault_master_key = derive_key(
+                    master_secret, salt=ctx.salt.encode("utf-8"))
+            except Exception as exc:
+                exit_error(f"Failed to derive vault master key: {exc}")
+            ctx.token_vault = create_vault(
+                args.vault_backend,
+                path=args.vault_path,
+                url=args.vault_url,
+                table=args.vault_table,
+                master_key=vault_master_key,
+            )
+            ctx.vault_namespace = args.vault_namespace
+        if args.key_provider:
+            if args.key_provider == "local":
+                secret = resolve_secret(
+                    args.key, config_path=args.key_provider_config)
+                ctx.key_provider = LocalKeyProvider(secret)
+            else:
+                exit_error(f"Unsupported key provider: {args.key_provider}")
         adapter = AdapterFactory.create(profile.engine)
 
         try:
@@ -355,7 +450,8 @@ def _cmd_mask(args: argparse.Namespace) -> None:
             if not args.kms_key_id:
                 exit_error("--kms-key-id is required for kms-envelope.")
         else:
-            secret = resolve_secret(args.key)
+            secret = resolve_secret(
+                args.key, config_path=args.key_provider_config)
             key_bytes = derive_key(secret, salt=args.salt.encode("utf-8"))
     ctx = MaskingContext(
         reversible=args.reversible,
@@ -372,7 +468,31 @@ def _cmd_mask(args: argparse.Namespace) -> None:
         kms_encryption_context=_parse_kms_encryption_context(
             args.kms_encryption_context
         ),
+        vault_namespace=args.vault_namespace,
     )
+    if args.vault:
+        master_secret = resolve_secret(
+            args.key, config_path=args.key_provider_config)
+        try:
+            vault_master_key = derive_key(
+                master_secret, salt=args.salt.encode("utf-8"))
+        except Exception as exc:
+            exit_error(f"Failed to derive vault master key: {exc}")
+        ctx.token_vault = create_vault(
+            args.vault_backend,
+            path=args.vault_path,
+            url=args.vault_url,
+            table=args.vault_table,
+            master_key=vault_master_key,
+        )
+        ctx.vault_namespace = args.vault_namespace
+    if args.key_provider:
+        if args.key_provider == "local":
+            secret = resolve_secret(
+                args.key, config_path=args.key_provider_config)
+            ctx.key_provider = LocalKeyProvider(secret)
+        else:
+            exit_error(f"Unsupported key provider: {args.key_provider}")
     adapter = AdapterFactory.create(Engine(args.engine))
 
     try:
@@ -417,12 +537,38 @@ def _cmd_unmask(args: argparse.Namespace) -> None:
 
     secret = None
     key_bytes = b""
+    key_provider = None
+    token_vault = None
+    if args.key_provider:
+        if args.key_provider == "local":
+            secret = resolve_secret(
+                args.key, config_path=args.key_provider_config)
+            key_provider = LocalKeyProvider(secret)
+        else:
+            exit_error(f"Unsupported key provider: {args.key_provider}")
+
+    if args.vault:
+        master_secret = resolve_secret(
+            args.key, config_path=args.key_provider_config)
+        try:
+            vault_master_key = derive_key(
+                master_secret, salt=args.salt.encode("utf-8"))
+        except Exception as exc:
+            exit_error(f"Failed to derive vault master key: {exc}")
+        token_vault = create_vault(
+            args.vault_backend,
+            path=args.vault_path,
+            url=args.vault_url,
+            table=args.vault_table,
+            master_key=vault_master_key,
+        )
+
     if args.key is not None:
-        secret = resolve_secret(args.key)
+        secret = resolve_secret(args.key, config_path=args.key_provider_config)
         key_bytes = derive_key(secret, salt=args.salt.encode("utf-8"))
     else:
         try:
-            secret = resolve_secret(None)
+            secret = resolve_secret(None, config_path=args.key_provider_config)
             key_bytes = derive_key(secret, salt=args.salt.encode("utf-8"))
         except SystemExit:
             key_bytes = b""
@@ -436,16 +582,30 @@ def _cmd_unmask(args: argparse.Namespace) -> None:
         if col not in adapter.columns:
             exit_error(
                 f"Column '{col}' not found. Available: {', '.join(adapter.columns)}")
-        try:
-            adapter.apply_unmask(
-                col,
-                key_bytes,
-                kms_provider=args.kms_provider,
-                kms_region=args.kms_region,
-                kms_encryption_context=kms_encryption_context,
+        column_key = key_bytes
+        if key_provider is not None:
+            column_key = key_provider.get_key(col)
+
+        if args.vault and token_vault is not None:
+            namespace = (
+                f"{args.vault_namespace}:{PIIRegistry.guess(col).name if PIIRegistry.guess(col) else 'default'}"
+                if args.vault_namespace else PIIRegistry.guess(col).name if PIIRegistry.guess(col) else 'default'
             )
-        except Exception as exc:
-            exit_error(f"Decryption failed for '{col}': {exc}")
+            try:
+                adapter.apply_vault_reverse(col, token_vault, namespace)
+            except Exception as exc:
+                exit_error(f"Vault reversal failed for '{col}': {exc}")
+        else:
+            try:
+                adapter.apply_unmask(
+                    col,
+                    column_key,
+                    kms_provider=args.kms_provider,
+                    kms_region=args.kms_region,
+                    kms_encryption_context=kms_encryption_context,
+                )
+            except Exception as exc:
+                exit_error(f"Decryption failed for '{col}': {exc}")
 
     try:
         save_adapter(adapter, args.output, fmt, source_fmt)
@@ -470,7 +630,28 @@ def _cmd_detect(args: argparse.Namespace) -> None:
         exit_error(f"Error loading data: {exc}")
 
     detected = PIIRegistry.detect(adapter.columns)
-    Reporter.detect_report(adapter, detected, args.input_file, args.samples)
+    source_labels: dict[str, str] = {
+        col: "name" for col in detected
+    }
+
+    if args.ner:
+        try:
+            from .facade import detect_pii_by_ner
+            ner_detected = detect_pii_by_ner(adapter, existing=detected)
+            for col, pii in ner_detected.items():
+                if col not in detected:
+                    source_labels[col] = "ner"
+                detected[col] = pii
+        except Exception as exc:
+            exit_error(f"NER detection failed: {exc}")
+
+    Reporter.detect_report(
+        adapter,
+        detected,
+        args.input_file,
+        args.samples,
+        source_labels=source_labels,
+    )
 
 
 def _cmd_validate_profile(args: argparse.Namespace) -> None:

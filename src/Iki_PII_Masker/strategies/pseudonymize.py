@@ -37,6 +37,7 @@ class PseudonymizeStrategy(BaseMaskingStrategy):
     def __init__(self) -> None:
         self.mapping: dict[str, str] = {}
         self._faker: Optional[Faker] = None
+        self.token_vault = None
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -49,24 +50,40 @@ class PseudonymizeStrategy(BaseMaskingStrategy):
 
     def _apply(self, value: str, pii_type: Optional[PIIType],
                ctx: MaskingContext) -> str:
+        if ctx.token_vault is not None:
+            namespace = (
+                f"{ctx.vault_namespace}:{getattr(pii_type, 'name', 'default')}"
+                if ctx.vault_namespace else getattr(pii_type, 'name', 'default')
+            )
+            token = ctx.token_vault.get_or_create(
+                value,
+                namespace=namespace,
+                token_factory=lambda original: self._make_fake(
+                    original, ctx, pii_type),
+            )
+            return token
+
         if value in self.mapping:
             return self.mapping[value]
 
+        fake = self._make_fake(value, ctx, pii_type)
+        self.mapping[value] = fake
+        return fake
+
+    def _make_fake(self, value: str, ctx: MaskingContext,
+                   pii_type: Optional[PIIType]) -> str:
         faker = self._get_faker(ctx.seed)
         method = pii_type.faker_method if pii_type else "word"
         try:
             result = getattr(faker, method)()
-            fake = str(result) if not isinstance(result, str) else result
+            return str(result)
         except Exception:
-            fake = faker.word()
+            return faker.word()
 
-        self.mapping[value] = fake
-        return fake
-
-    # ── public helpers ────────────────────────────────────────────────────────
-
-    def reverse(self, fake_value: str) -> Optional[str]:
+    def reverse(self, fake_value: str, namespace: str | None = None) -> Optional[str]:
         """Return the original value for a given fake, or ``None`` if unknown."""
+        if namespace is not None and getattr(self, "token_vault", None):
+            return self.token_vault.reverse(fake_value, namespace)
         rev = {v: k for k, v in self.mapping.items()}
         return rev.get(fake_value)
 

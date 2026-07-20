@@ -47,13 +47,18 @@ class MaskingService:
             dry_run: bool = False, progress: bool = True) -> float:
         """Apply masking. Returns elapsed seconds."""
         t0 = time.perf_counter()
-        if not dry_run:
-            if progress and sys.stderr.isatty():
-                self._run_with_progress(col_map)
-            else:
-                for col, pii_type in col_map.items():
-                    self.adapter.apply_mask(
-                        col, self._strategy, pii_type, self.ctx)
+        original_key_bytes = self.ctx.key_bytes
+        try:
+            if not dry_run:
+                if progress and sys.stderr.isatty():
+                    self._run_with_progress(col_map)
+                else:
+                    for col, pii_type in col_map.items():
+                        self._prepare_column_key(col)
+                        self.adapter.apply_mask(
+                            col, self._strategy, pii_type, self.ctx)
+        finally:
+            self.ctx.key_bytes = original_key_bytes
         return time.perf_counter() - t0
 
     def _run_with_progress(self, col_map: dict[str, Optional[PIIType]]) -> None:
@@ -69,6 +74,11 @@ class MaskingService:
         ) as prog:
             task = prog.add_task("Masking", total=len(col_map))
             for col, pii_type in col_map.items():
+                self._prepare_column_key(col)
                 self.adapter.apply_mask(
                     col, self._strategy, pii_type, self.ctx)
                 prog.advance(task)
+
+    def _prepare_column_key(self, col: str) -> None:
+        if self.ctx.key_provider is not None and self.ctx.reversible:
+            self.ctx.key_bytes = self.ctx.key_provider.get_key(col)

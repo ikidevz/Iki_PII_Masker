@@ -155,10 +155,26 @@ with open('$OUT/unmasked.csv') as f:
 "
 echo ""
 
+echo "▶  6c. ChaCha20-Poly1305 reversible masking -> output/reversible_chacha.csv"
+$TOOL mask "$DATA" \
+    --columns "email:user_id" \
+    --strategy redact \
+    --reversible \
+    --reversible-cipher chacha20-poly1305 \
+    --key "my-production-secret-2024" \
+    --no-progress \
+    -o "$OUT/reversible_chacha.csv"
+echo "   Encrypted email (first row):"
+python3 -c "
+import csv
+with open('$OUT/reversible_chacha.csv') as f:
+    row = next(csv.DictReader(f))
+    print(f'   {row["email"][:60]}...')
+"
 echo ""
 
-# ── 6c. AWS KMS envelope reversible masking ──────
-echo "▶  6c. AWS KMS envelope reversible masking -> output/kms_reversible.csv"
+# ── 6d. AWS KMS envelope reversible masking ──────
+echo "▶  6d. AWS KMS envelope reversible masking -> output/kms_reversible.csv"
 $TOOL mask "$DATA" \
     --columns "email:user_id" \
     --strategy redact \
@@ -266,8 +282,24 @@ $TOOL mask "$DATA" \
 echo "   Generalized values (first 3 rows):"
 python3 -c "import csv; f=open('$OUT/generalized.csv'); r=csv.DictReader(f); [print(f'   {row[\"age\"]} | {row[\"revenue\"]} | {row[\"dob\"]}') for _, row in zip(range(3), r)]"
 echo ""
-# ── 14. MaskFormat — preserve separators ───────────────────────────────────
-echo "▶  14. MaskFormat → output/mask_format.csv"
+# ── 14. NER redaction — free-text entity masking (optional spaCy) ──────────
+
+if python3 -c "import spacy" >/dev/null 2>&1; then
+  echo "▶  14. NER redaction → output/ner_redacted.csv"
+  $TOOL mask "$DATA" \
+      --columns "notes" \
+      --strategy ner_redact \
+      --no-progress \
+      -o "$OUT/ner_redacted.csv"
+  echo "   Notes column (first 3 rows):"
+  python3 -c "import csv; f=open('$OUT/ner_redacted.csv'); r=csv.DictReader(f); [print(f'   {row[\"notes\"]}') for _, row in zip(range(3), r)]"
+else
+  echo "▶  14. NER redaction skipped — install spaCy and run: pip install spacy && python -m spacy download en_core_web_sm"
+fi
+
+echo ""
+# ── 15. MaskFormat — preserve separators ───────────────────────────────────
+echo "▶  15. MaskFormat → output/mask_format.csv"
 $TOOL mask "$DATA" \
     --columns "email:phone:credit_card" \
     --strategy mask_format \

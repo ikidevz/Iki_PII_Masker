@@ -49,6 +49,14 @@ class PIIRegistry:
                 "[ID]",          "uuid4"),
         PIIType("password",    [r"\bpassword\b", r"\bpasswd\b", r"\bhash\b", r"\bpwd\b"],
                 "[REDACTED]",    "password"),
+        PIIType("person",      [r"\bperson\b", r"\bfull_name\b", r"\bname\b"],
+                "[PERSON]",     "name"),
+        PIIType("location",    [r"\blocation\b", r"\bcity\b", r"\bstate\b", r"\bcountry\b"],
+                "[LOCATION]",   "city"),
+        PIIType("organization", [r"\borganization\b", r"\borg\b", r"\bcompany\b"],
+                "[ORG]",        "company"),
+        PIIType("misc",        [r"\bmisc\b", r"\bentity\b", r"\bdescription\b"],
+                "[MISC]",       "word"),
     ]
 
     _by_name: ClassVar[dict[str, PIIType]] = {t.name: t for t in _types}

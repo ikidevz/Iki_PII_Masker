@@ -13,6 +13,8 @@ Prerequisites:
 """
 
 from __future__ import annotations
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from Iki_PII_Masker import (
     Strategy,
     Engine,
@@ -77,6 +79,23 @@ def show_csv_head(path: Path, rows: int = 3, cols: list[str] = None) -> None:
             display = {k: v for k, v in row.items(
             ) if k in cols} if cols else dict(row)
             console.print(f"  [dim]{display}[/]")
+
+
+def _generate_rsa_key_pair() -> tuple[bytes, bytes]:
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    )
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    private_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return public_bytes, private_bytes
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -791,8 +810,98 @@ def example_34_reversible_cipher_choice() -> None:
     show_csv_head(restored_path, cols=["email"])
 
 
-def example_35_kms_envelope() -> None:
-    section("35 · KMS envelope — advanced optional KMS integration")
+def example_35_reversible_cipher_variants() -> None:
+    section(
+        "35 · Reversible cipher variants — AES-CCM / AES-SIV / AES-CBC-HMAC / RSA-OAEP / ECIES / FF1 / FF3-1"
+    )
+
+    variants = [
+        ("aes-ccm", "35_reversible_aes_ccm.csv", "email"),
+        ("aes-siv", "35_reversible_aes_siv.csv", "email"),
+        ("aes-cbc-hmac", "35_reversible_aes_cbc_hmac.csv", "email"),
+        ("rsa-oaep", "35_reversible_rsa_oaep.csv", "email"),
+        ("ecies", "35_reversible_ecies.csv", "email"),
+        ("ff1", "35_reversible_ff1.csv", "user_id"),
+        ("ff3-1", "35_reversible_ff3.csv", "user_id"),
+    ]
+
+    for cipher_name, filename, column in variants:
+        console.print(f"  [cyan]{cipher_name}[/]")
+        adapter = create_adapter(Engine.polars)
+        load_data(adapter, DATA)
+
+        try:
+            if cipher_name == "rsa-oaep":
+                public_key, private_key = _generate_rsa_key_pair()
+                ctx = MaskingContext(
+                    reversible=True,
+                    key_bytes=public_key,
+                    reversible_cipher=cipher_name,
+                )
+                unmask_key = private_key
+            elif cipher_name == "ecies":
+                try:
+                    from ecies.keys.private import PrivateKey
+                except ImportError as exc:
+                    raise ImportError(
+                        "ECIES support requires the optional 'eciespy' dependency."
+                    ) from exc
+                private_key = PrivateKey("secp256k1")
+                public_key = private_key.public_key
+                ctx = MaskingContext(
+                    reversible=True,
+                    key_bytes=public_key.to_hex().encode(),
+                    reversible_cipher=cipher_name,
+                )
+                unmask_key = private_key.to_hex().encode()
+            else:
+                ctx = make_reversible_context(
+                    "variant-secret-2026",
+                    reversible_cipher=cipher_name,
+                )
+                unmask_key = derive_encryption_key("variant-secret-2026")
+
+            mask_dataframe(adapter, column, Strategy.redact, ctx)
+            masked_path = OUT / filename
+            save_data(adapter, masked_path)
+            console.print(f"    Masked → {masked_path.name}")
+
+            adapter2 = create_adapter(Engine.polars)
+            load_data(adapter2, masked_path)
+            unmask_dataframe(adapter2, [column], unmask_key)
+
+            restored_path = OUT / f"{filename[:-4]}_restored.csv"
+            save_data(adapter2, restored_path)
+            console.print(f"    Restored → {restored_path.name}")
+        except ImportError as exc:
+            console.print(f"    [yellow]Skip {cipher_name} — {exc}[/]")
+        except Exception as exc:
+            console.print(f"    [yellow]Skip {cipher_name} — {exc}[/]")
+
+
+def example_36_ner_redact() -> None:
+    section("36 · NER redaction — free-text entity masking")
+
+    try:
+        import spacy  # noqa: F401
+    except ImportError:
+        console.print(
+            "  [yellow]Skip[/] — install spaCy and a model: pip install spacy && python -m spacy download en_core_web_sm"
+        )
+        return
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "notes", Strategy.ner_redact)
+
+    out = OUT / "36_ner_redacted.csv"
+    save_data(adapter, out)
+    console.print("  Notes after NER redaction:")
+    show_csv_head(out, cols=["notes"])
+
+
+def example_37_kms_envelope() -> None:
+    section("37 · KMS envelope — advanced optional KMS integration")
 
     try:
         import boto3  # noqa: F401
@@ -862,7 +971,9 @@ EXAMPLES = [
     example_32_perturb,
     example_33_bucketize,
     example_34_reversible_cipher_choice,
-    example_35_kms_envelope,
+    example_35_reversible_cipher_variants,
+    example_36_ner_redact,
+    example_37_kms_envelope,
 ]
 
 

@@ -28,6 +28,7 @@ class TokenizeStrategy(BaseMaskingStrategy):
     def __init__(self) -> None:
         self.token_table: dict[str, str] = {}      # value → token
         self._reverse_table: dict[str, str] = {}   # token → value
+        self.token_vault = None
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -50,6 +51,19 @@ class TokenizeStrategy(BaseMaskingStrategy):
 
     def _apply(self, value: str, pii_type: Optional[PIIType],
                ctx: MaskingContext) -> str:
+        if ctx.token_vault is not None:
+            self.token_vault = ctx.token_vault
+            namespace = (
+                f"{ctx.vault_namespace}:{getattr(pii_type, 'name', 'default')}"
+                if ctx.vault_namespace else getattr(pii_type, 'name', 'default')
+            )
+            token = ctx.token_vault.get_or_create(
+                value,
+                namespace=namespace,
+                token_factory=lambda original: self._make_token(original, ctx),
+            )
+            return token
+
         if value in self.token_table:
             return self.token_table[value]
 
@@ -63,10 +77,10 @@ class TokenizeStrategy(BaseMaskingStrategy):
         self._reverse_table[token] = value
         return token
 
-    # ── public helpers ────────────────────────────────────────────────────────
-
-    def detokenize(self, token: str) -> Optional[str]:
+    def detokenize(self, token: str, namespace: str | None = None) -> Optional[str]:
         """Return the original value for *token*, or ``None`` if unknown."""
+        if namespace is not None and getattr(self, "token_vault", None):
+            return self.token_vault.reverse(token, namespace)
         return self._reverse_table.get(token)
 
     def clear(self) -> None:

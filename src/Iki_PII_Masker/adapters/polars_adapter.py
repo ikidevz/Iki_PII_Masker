@@ -1,5 +1,6 @@
 from .base import BaseDataFrameAdapter
 from ..config import FileFormat, PIIType, decrypt_value
+from ..config.vault.base import BaseTokenVault
 from ..strategies import BaseMaskingStrategy, MaskingContext
 from typing import Any, Optional
 
@@ -63,6 +64,21 @@ class PolarsAdapter(BaseDataFrameAdapter):
                     kms_region=kms_region,
                     kms_encryption_context=kms_encryption_context,
                 )
+                for v in self._df[col].to_list()
+            ])
+        )
+
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
+    ) -> None:
+        import polars as pl
+        self._df = self._df.with_columns(
+            pl.Series(col, [
+                token_vault.reverse(
+                    str(v), namespace) if v is not None else None
                 for v in self._df[col].to_list()
             ])
         )

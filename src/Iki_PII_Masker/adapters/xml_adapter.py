@@ -14,6 +14,7 @@ from .base import BaseDataFrameAdapter
 from ..config.registry import PIIType
 from ..config.enums import FileFormat
 from ..config.crypto import decrypt_value
+from ..config.vault.base import BaseTokenVault
 from ..strategies.base import BaseMaskingStrategy, MaskingContext
 
 
@@ -175,6 +176,20 @@ class XMLAdapter(BaseDataFrameAdapter):
                     kms_region=kms_region,
                     kms_encryption_context=kms_encryption_context,
                 )
+
+    def apply_vault_reverse(
+        self,
+        col: str,
+        token_vault: BaseTokenVault,
+        namespace: str,
+    ) -> None:
+        for node in self._nodes:
+            child = node.find(col)
+            if child is not None and child.text:
+                child.text = token_vault.reverse(child.text, namespace)
+            elif col in node.attrib:
+                node.attrib[col] = token_vault.reverse(
+                    node.attrib[col], namespace)
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         results = []
