@@ -5,6 +5,5 @@ dist/
 structure.py
 ARTICLE.MD
 .pytest_cache/
-examples/data/
-examples/output/
 .pypirc
+.pytest_cache/
