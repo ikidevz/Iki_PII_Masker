@@ -91,12 +91,28 @@ class DuckDBAdapter(BaseDataFrameAdapter):
                               for i in range(arrow_tbl.num_columns)})
         self._rel = self._conn().from_arrow(new_table)
 
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None:
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None:
         import pyarrow as pa
         arrow_tbl = self._to_arrow()
         idx = list(self._rel.columns).index(col)
         values = arrow_tbl.column(idx).to_pylist()
-        decrypted = [decrypt_value(str(v), key_bytes) for v in values]
+        decrypted = [
+            decrypt_value(
+                str(v),
+                key_bytes,
+                kms_provider=kms_provider,
+                kms_region=kms_region,
+                kms_encryption_context=kms_encryption_context,
+            )
+            for v in values
+        ]
         arrays = [
             pa.array(decrypted) if i == idx else arrow_tbl.column(i)
             for i in range(arrow_tbl.num_columns)

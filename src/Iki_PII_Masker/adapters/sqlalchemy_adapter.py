@@ -147,10 +147,23 @@ class SQLAlchemyAdapter(BaseDataFrameAdapter):
         for row in self._rows:
             row[col] = strategy.mask(row[col], pii_type, ctx)
 
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None:
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None:
         for row in self._rows:
             if row[col] is not None:
-                row[col] = decrypt_value(str(row[col]), key_bytes)
+                row[col] = decrypt_value(
+                    str(row[col]),
+                    key_bytes,
+                    kms_provider=kms_provider,
+                    kms_region=kms_region,
+                    kms_encryption_context=kms_encryption_context,
+                )
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         return [r[col] for r in self._rows if r.get(col) is not None][:n]

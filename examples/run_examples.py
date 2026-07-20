@@ -18,7 +18,10 @@ from Iki_PII_Masker import (
     Engine,
     FileFormat,
     ProfileConfig,
-    ColumnRuleMap
+    ColumnRuleMap,
+    MaskingContext,
+    encrypt_value,
+    decrypt_value,
 )
 from Iki_PII_Masker.facade import report_detection, report_masking  # Rich output
 from Iki_PII_Masker.facade import create_jsonpath_adapter           # nested JSON
@@ -559,7 +562,8 @@ def example_21_dry_run() -> None:
     col_map = svc.resolve_columns(None, auto=True)
 
     t0 = time.perf_counter()
-    mask_dataframe(adapter, None, Strategy.fake, ctx, auto=True, dry_run=True)
+    mask_dataframe(adapter, None, Strategy.fake, ctx,
+                   auto=True, dry_run=True, progress=True)
     elapsed = time.perf_counter() - t0
 
     report_masking(adapter, col_map, Strategy.fake, elapsed, dry_run=True)
@@ -589,6 +593,237 @@ def example_22_multi_strategy() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 23 — Keep strategy (explicit pass-through)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_23_keep_strategy() -> None:
+    section("23 · Keep strategy — preserve selected columns explicitly")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email:full_name:phone", Strategy.keep)
+
+    out = OUT / "23_keep.csv"
+    save_data(adapter, out)
+    console.print(
+        "  Values are preserved exactly as-is; this is useful when you want"
+        " explicit column inclusion without transformation.")
+    show_csv_head(out, cols=["email", "full_name", "phone"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 24 — HMAC hashing with a secret key
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_24_hash_with_secret_key() -> None:
+    section("24 · Hash with secret key — HMAC-SHA256 strengthens hashing")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+
+    ctx = make_context(key="super_secret_hash_key_2026")
+    mask_dataframe(adapter, "user_id:email", Strategy.hash, ctx)
+
+    out = OUT / "24_hashed_with_key.csv"
+    save_data(adapter, out)
+    console.print("  HashStrategy now uses an explicit secret key for HMAC.")
+    show_csv_head(out, cols=["user_id", "email"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 25 — PBKDF2 hashing
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_25_pbkdf2_hash() -> None:
+    section("25 · PBKDF2 hashing — key-stretched one-way hash")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+
+    ctx = make_context(
+        key="super_secret_pbkdf2_key_2026",
+        pbkdf2_iterations=5_000,
+    )
+    mask_dataframe(adapter, "user_id:email", Strategy.pbkdf2, ctx)
+
+    out = OUT / "25_pbkdf2.csv"
+    save_data(adapter, out)
+    console.print(
+        "  PBKDF2 produces a strong one-way hash using a secret key.")
+    show_csv_head(out, cols=["user_id", "email"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 26 — Direct cryptography helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_26_direct_crypto_helpers() -> None:
+    section("26 · Direct cryptography helpers — AES-GCM encode/decode")
+
+    secret = "my-crypto-secret-2026"
+    key = derive_encryption_key(secret)
+    sample_value = "alice@example.com"
+    encrypted = encrypt_value(sample_value, key)
+    decrypted = decrypt_value(encrypted, key)
+
+    console.print(f"  Original : {sample_value}")
+    console.print(f"  Encrypted: {encrypted}")
+    console.print(f"  Decrypted: {decrypted}")
+
+    if decrypted != sample_value:
+        raise RuntimeError("Direct crypto helper round-trip failed")
+
+
+def example_27_truncate() -> None:
+    section("27 · Truncate — preserve prefix, discard remainder")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email:full_name", Strategy.truncate,
+                   make_context(truncate_keep=6))
+
+    out = OUT / "27_truncate.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["email", "full_name"])
+
+
+def example_28_salted_hash() -> None:
+    section("28 · Salted hash — stable one-way hash with a secret key")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    ctx = make_context(key="salted-secret-2026")
+    mask_dataframe(adapter, "user_id:email", Strategy.salted_hash, ctx)
+
+    out = OUT / "28_salted_hash.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["user_id", "email"])
+
+
+def example_29_hmac_hash() -> None:
+    section("29 · HMAC hash — keyed deterministic hashing")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    ctx = make_context(key="hmac-secret-2026")
+    mask_dataframe(adapter, "user_id:email", Strategy.hmac, ctx)
+
+    out = OUT / "29_hmac_hash.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["user_id", "email"])
+
+
+def example_30_shuffle() -> None:
+    section("30 · Shuffle — randomize values within a column")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email", Strategy.shuffle,
+                   make_context(seed=123))
+
+    out = OUT / "30_shuffled.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["email"])
+
+
+def example_31_anonymize() -> None:
+    section("31 · Anonymize — generic anonymous placeholders")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "full_name:email", Strategy.anonymize,
+                   make_context(seed=24))
+
+    out = OUT / "31_anonymized.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["full_name", "email"])
+
+
+def example_32_perturb() -> None:
+    section("32 · Perturb — slight noise for analytics-safe values")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    ctx = make_context(perturbation_scale=0.15, perturbation_days=14, seed=5)
+    mask_dataframe(adapter, "age:revenue", Strategy.perturb, ctx)
+
+    out = OUT / "32_perturbed.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["age", "revenue"])
+
+
+def example_33_bucketize() -> None:
+    section("33 · Bucketize — coarse value ranges")
+
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    ctx = make_context(bucket_step=20)
+    mask_dataframe(adapter, "age", Strategy.bucketize, ctx)
+
+    out = OUT / "33_bucketize.csv"
+    save_data(adapter, out)
+    show_csv_head(out, cols=["age"])
+
+
+def example_34_reversible_cipher_choice() -> None:
+    section("34 · Reversible cipher choice — ChaCha20-Poly1305")
+
+    SECRET = "chacha-secret-2026"
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    mask_dataframe(adapter, "email", Strategy.redact,
+                   make_reversible_context(SECRET,
+                                           reversible_cipher="chacha20-poly1305"))
+
+    masked_path = OUT / "34_reversible_chacha.csv"
+    save_data(adapter, masked_path)
+    console.print("  Masked →")
+    show_csv_head(masked_path, cols=["email"])
+
+    key = derive_encryption_key(SECRET)
+    adapter2 = create_adapter(Engine.polars)
+    load_data(adapter2, masked_path)
+    unmask_dataframe(adapter2, ["email"], key)
+
+    restored_path = OUT / "34_reversible_chacha_restored.csv"
+    save_data(adapter2, restored_path)
+    console.print("  Restored →")
+    show_csv_head(restored_path, cols=["email"])
+
+
+def example_35_kms_envelope() -> None:
+    section("35 · KMS envelope — advanced optional KMS integration")
+
+    try:
+        import boto3  # noqa: F401
+    except ImportError:
+        console.print(
+            "  [yellow]Skip[/] — pip install .[kms] or pip install boto3")
+        return
+
+    console.print(
+        "  AWS KMS envelope masking is supported by the CLI and requires")
+    console.print("  a configured AWS environment and a valid KMS key.")
+    console.print("  Example command:")
+    console.print("  [dim]pii_masker mask data.csv")
+    console.print("      --columns email:user_id")
+    console.print("      --reversible")
+    console.print("      --reversible-cipher kms-envelope")
+    console.print("      --kms-provider aws")
+    console.print("      --kms-key-id alias/my-key")
+    console.print("      --kms-region us-east-1")
+    console.print("      --kms-encryption-context purpose=pii-mask")
+    console.print("      -o output.csv[/dim]")
+    console.print("  To restore:")
+    console.print("  [dim]pii_masker unmask output.csv")
+    console.print("      --columns email:user_id")
+    console.print("      --kms-provider aws")
+    console.print("      --kms-region us-east-1")
+    console.print("      --kms-encryption-context purpose=pii-mask")
+    console.print("      -o restored.csv[/dim]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -615,6 +850,19 @@ EXAMPLES = [
     example_20_pipe,
     example_21_dry_run,
     example_22_multi_strategy,
+    example_23_keep_strategy,
+    example_24_hash_with_secret_key,
+    example_25_pbkdf2_hash,
+    example_26_direct_crypto_helpers,
+    example_27_truncate,
+    example_28_salted_hash,
+    example_29_hmac_hash,
+    example_30_shuffle,
+    example_31_anonymize,
+    example_32_perturb,
+    example_33_bucketize,
+    example_34_reversible_cipher_choice,
+    example_35_kms_envelope,
 ]
 
 

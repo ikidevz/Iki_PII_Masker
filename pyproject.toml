@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iki-pii-masker"
-version = "1.0.1"
+version = "1.1.0"
 description = "Production-grade PII masking CLI tool for data engineers and analysts."
 readme = "README.md"
 license = { text = "MIT" }
@@ -40,6 +40,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+crypto = [
+    "ecies",
+    "pyffx",
+    "ff3",
+]
+kms = [
+    "boto3>=1.30.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",

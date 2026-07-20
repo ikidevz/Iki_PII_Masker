@@ -30,7 +30,14 @@ class BaseDataFrameAdapter(ABC):
                    pii_type: Optional[PIIType], ctx: MaskingContext) -> None: ...
 
     @abstractmethod
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None: ...
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None: ...
 
     @abstractmethod
     def sample_values(self, col: str, n: int = 3) -> list[Any]: ...

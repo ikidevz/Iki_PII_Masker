@@ -2,25 +2,6 @@
 config/xml_io.py
 ================
 XML I/O helpers for XPath-based PII masking.
-
-Provides ``XMLAdapter`` — a thin wrapper that loads an XML document into
-a flat list-of-dicts view (one dict per matched XPath node) so the rest
-of the masking pipeline can treat it like any other adapter.
-
-Install extra dependency (optional — stdlib ``xml.etree`` is the default):
-    pip install lxml    # faster, fuller XPath 1.0 support
-
-Usage
------
-    from Iki_PII_Masker.facade import create_xml_adapter
-
-    adapter = create_xml_adapter(
-        xpath="//user",           # repeating element to treat as rows
-        pii_fields=["email", "phone"],  # child element names to mask
-    )
-    load_data(adapter, Path("users.xml"))
-    mask_dataframe(adapter, "email:phone", Strategy.fake)
-    save_data(adapter, Path("masked.xml"))
 """
 
 from __future__ import annotations
@@ -38,87 +19,111 @@ from ..strategies.base import BaseMaskingStrategy, MaskingContext
 
 class XMLAdapter(BaseDataFrameAdapter):
     """
-    Loads an XML file using an XPath row selector and a list of child-element
-    field names.  Masking modifies the parsed element tree in-place; saving
-    serialises the tree back to XML.
+    Loads an XML file using an XPath row selector.
 
-    Parameters
-    ----------
-    xpath       : XPath expression that selects the repeating row elements
-                  e.g. ``"//user"``, ``"//record"``, ``".//row"``
-    pii_fields  : child element (or attribute) names treated as columns
-                  e.g. ``["email", "phone", "full_name"]``
-    use_lxml    : force use of lxml even if not required  (default False)
+    Security note: Uses hardened parser settings to mitigate XXE and
+    entity expansion attacks (billion laughs).
     """
 
     def __init__(
         self,
-        xpath:      str = "//*",
-        pii_fields: list[str] = None,
-        use_lxml:   bool = False,
+        xpath: str = "//*",
+        pii_fields: list[str] | None = None,
+        use_lxml: bool = False,
     ) -> None:
         self._xpath = xpath
         self._pii_fields = pii_fields or []
         self._use_lxml = use_lxml
-        self._tree:    Any = None
-        self._nodes:   list[Any] = []   # matched row elements
+        self._tree: Any = None
+        self._nodes: list[Any] = []
 
-    # ── parser selection ──────────────────────────────────────────────────────
+    # ── Secure parser creation ────────────────────────────────────────────────
 
     def _get_etree(self) -> Any:
-        if self._use_lxml:
-            import lxml.etree as ET
-            return ET
-        try:
-            import lxml.etree as ET
-            return ET
-        except ImportError:
-            import xml.etree.ElementTree as ET
-            return ET
+        """Return ET module with hardened parser."""
+        if self._use_lxml or True:  # Prefer lxml when available
+            try:
+                import lxml.etree as ET
+                return ET
+            except ImportError:
+                pass
 
-    # ── BaseDataFrameAdapter interface ─────────────────────────────────────────
+        import xml.etree.ElementTree as ET
+        return ET
+
+    def _create_secure_parser(self, ET: Any):
+        """Create a secure parser that disables dangerous features."""
+        if hasattr(ET, "XMLParser"):  # lxml
+            return ET.XMLParser(
+                resolve_entities=False,      # Block XXE
+                no_network=True,             # Prevent external entity loading
+                huge_tree=False,             # Limit tree size
+                dtd_validation=False,
+                load_dtd=False,
+                recover=False,               # Don't try to recover from errors
+            )
+        else:
+            # stdlib xml.etree.ElementTree has limited hardening options
+            # It is safer in recent Python versions, but still not ideal
+            return None
+
+    # ── Loading ───────────────────────────────────────────────────────────────
 
     def load(self, source: Any, fmt: FileFormat = FileFormat.csv) -> None:
         ET = self._get_etree()
+        parser = self._create_secure_parser(ET)
+
         if isinstance(source, (str, Path)):
-            self._tree = ET.parse(str(source))
+            path = str(source)
+            if parser is not None:  # lxml
+                self._tree = ET.parse(path, parser=parser)
+            else:  # stdlib fallback
+                self._tree = ET.parse(path)
+
             root = self._tree.getroot()
+
         elif isinstance(source, (bytes, io.BytesIO)):
             data = source.read() if isinstance(source, io.BytesIO) else source
-            root = ET.fromstring(data)
-            self._tree = root
+            if parser is not None:
+                self._tree = ET.fromstring(data, parser=parser)
+            else:
+                self._tree = ET.fromstring(data)
+            root = self._tree
+
         else:
             raise TypeError(f"Unsupported XML source type: {type(source)}")
 
-        self._nodes = root.findall(
-            self._xpath.lstrip("/").replace("//", "./")
-        ) if hasattr(root, "findall") else []
+        # Find matching nodes
+        if hasattr(root, "findall"):
+            # Simple XPath normalization
+            xpath = self._xpath.lstrip("/").replace("//", "./") or "."
+            self._nodes = root.findall(xpath)
+        else:
+            self._nodes = []
+
+    # ── Saving ────────────────────────────────────────────────────────────────
 
     def save(self, dest: Any, fmt: FileFormat = FileFormat.csv) -> None:
         ET = self._get_etree()
+        root = self._tree.getroot() if hasattr(self._tree, "getroot") else self._tree
+
         if dest is None:
             import sys
-            raw = ET.tostring(
-                self._tree if not hasattr(
-                    self._tree, "getroot") else self._tree.getroot(),
-                encoding="unicode",
-            )
+            raw = ET.tostring(root, encoding="unicode", xml_declaration=True)
             sys.stdout.write(raw)
         elif isinstance(dest, (str, Path)):
             if hasattr(self._tree, "write"):
-                try:
-                    self._tree.write(
-                        str(dest), encoding="utf-8", xml_declaration=True)
-                except TypeError:
-                    self._tree.write(
-                        str(dest), encoding="unicode", xml_declaration=True)
+                self._tree.write(str(dest), encoding="utf-8",
+                                 xml_declaration=True)
             else:
-                raw = ET.tostring(self._tree, encoding="unicode")
+                raw = ET.tostring(root, encoding="unicode",
+                                  xml_declaration=True)
                 Path(dest).write_text(raw, encoding="utf-8")
         elif isinstance(dest, io.BytesIO):
-            root = self._tree if not hasattr(
-                self._tree, "getroot") else self._tree.getroot()
-            dest.write(ET.tostring(root))
+            raw = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            dest.write(raw)
+
+    # ── BaseDataFrameAdapter interface ────────────────────────────────────────
 
     @property
     def columns(self) -> list[str]:
@@ -129,24 +134,47 @@ class XMLAdapter(BaseDataFrameAdapter):
 
     def apply_mask(
         self,
-        col:      str,
+        col: str,
         strategy: BaseMaskingStrategy,
         pii_type: Optional[PIIType],
-        ctx:      MaskingContext,
+        ctx: MaskingContext,
     ) -> None:
         for node in self._nodes:
+            # Element text
             child = node.find(col)
             if child is not None and child.text:
                 child.text = str(strategy.mask(child.text, pii_type, ctx))
+            # Attribute
             elif col in node.attrib:
                 node.attrib[col] = str(strategy.mask(
                     node.attrib[col], pii_type, ctx))
 
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None:
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None:
         for node in self._nodes:
             child = node.find(col)
             if child is not None and child.text:
-                child.text = decrypt_value(child.text, key_bytes)
+                child.text = decrypt_value(
+                    child.text,
+                    key_bytes,
+                    kms_provider=kms_provider,
+                    kms_region=kms_region,
+                    kms_encryption_context=kms_encryption_context,
+                )
+            elif col in node.attrib:
+                node.attrib[col] = decrypt_value(
+                    node.attrib[col],
+                    key_bytes,
+                    kms_provider=kms_provider,
+                    kms_region=kms_region,
+                    kms_encryption_context=kms_encryption_context,
+                )
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         results = []

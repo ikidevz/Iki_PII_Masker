@@ -79,6 +79,7 @@ from .config.crypto import derive_key
 from .config.io import load_adapter as _load_adapter, save_adapter as _save_adapter
 from .config.value_detector import ValuePatternDetector
 from .strategies.base import MaskingContext
+from .strategies.composite import CompositeStrategy
 from .adapters.base import BaseDataFrameAdapter
 from .adapters.factory import AdapterFactory
 from .adapters.json_adapter import JSONPathAdapter
@@ -198,19 +199,40 @@ def unmask_dataframe(
     adapter: BaseDataFrameAdapter,
     columns: list[str],
     key:     bytes,
+    *,
+    kms_provider: str | None = None,
+    kms_region: str | None = None,
+    kms_encryption_context: dict[str, str] | None = None,
 ) -> None:
     """
-    Reverse AES-256-GCM masking for each column in *columns*.
+    Reverse reversible masking for each column in *columns*.
 
-    *key* must be the same bytes used during masking.
+    *key* must be the same bytes used during masking for AES-style
+    reversible ciphers. For ``kms-envelope`` tokens, pass a KMS provider,
+    region, and optional encryption context instead.
 
     Example
     -------
         key = derive_encryption_key("my-secret")
         unmask_dataframe(adapter, ["email", "user_id"], key)
+
+        unmask_dataframe(
+            adapter,
+            ["email"],
+            b"",
+            kms_provider="aws",
+            kms_region="us-east-1",
+            kms_encryption_context={"purpose": "pii-mask"},
+        )
     """
     for col in columns:
-        adapter.apply_unmask(col, key)
+        adapter.apply_unmask(
+            col,
+            key,
+            kms_provider=kms_provider,
+            kms_region=kms_region,
+            kms_encryption_context=kms_encryption_context,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -263,10 +285,24 @@ def save_data(
 
 def make_context(
     *,
-    salt:         str = "",
-    seed:         Optional[int] = None,
-    partial_keep: int = 4,
-    partial_side: str = "right",
+    salt:               str = "",
+    key:                str | bytes | None = None,
+    key_bytes:          Any = None,
+    seed:               Optional[int] = None,
+    partial_keep:       int = 4,
+    partial_side:       str = "right",
+    truncate_keep:      int = 4,
+    bucket_step:        int = 10,
+    date_precision:     str = "year",
+    anonymize_prefix:   str = "ANON",
+    perturbation_scale: float = 0.1,
+    perturbation_days:  int = 7,
+    pbkdf2_iterations:  int = 100_000,
+    reversible_cipher:  str = "aesgcm",
+    kms_provider:       str | None = None,
+    kms_region:         str | None = None,
+    kms_key_id:         str | None = None,
+    kms_encryption_context: dict[str, str] | None = None,
 ) -> MaskingContext:
     """
     Build a plain (non-reversible) ``MaskingContext``.
@@ -275,16 +311,30 @@ def make_context(
     -------
         ctx = make_context(seed=42)
         ctx = make_context(salt="pepper", partial_keep=4)
+        ctx = make_context(key="secret-key")
     """
     return MaskingContext(
+        key=key,
         salt=salt,
+        pbkdf2_iterations=pbkdf2_iterations,
         seed=seed,
         partial_keep=partial_keep,
         partial_side=partial_side,
+        truncate_keep=truncate_keep,
+        bucket_step=bucket_step,
+        date_precision=date_precision,
+        anonymize_prefix=anonymize_prefix,
+        perturbation_scale=perturbation_scale,
+        perturbation_days=perturbation_days,
+        reversible_cipher=reversible_cipher,
+        kms_provider=kms_provider,
+        kms_region=kms_region,
+        kms_key_id=kms_key_id,
+        kms_encryption_context=kms_encryption_context,
     )
 
 
-def make_reversible_context(secret: str, **kwargs: Any) -> MaskingContext:
+def make_reversible_context(secret: str, salt: bytes = b"", **kwargs: Any) -> MaskingContext:
     """
     Build a ``MaskingContext`` that AES-256-GCM encrypts every masked value.
 
@@ -295,7 +345,7 @@ def make_reversible_context(secret: str, **kwargs: Any) -> MaskingContext:
         ctx = make_reversible_context("my-production-secret-2024")
         mask_dataframe(adapter, "email:user_id", Strategy.redact, ctx)
     """
-    key = derive_key(secret)
+    key = derive_key(secret, salt=salt)
     base = make_context(**kwargs)
     return MaskingContext(
         reversible=True,
@@ -304,6 +354,17 @@ def make_reversible_context(secret: str, **kwargs: Any) -> MaskingContext:
         seed=base.seed,
         partial_keep=base.partial_keep,
         partial_side=base.partial_side,
+        truncate_keep=base.truncate_keep,
+        bucket_step=base.bucket_step,
+        date_precision=base.date_precision,
+        anonymize_prefix=base.anonymize_prefix,
+        perturbation_scale=base.perturbation_scale,
+        perturbation_days=base.perturbation_days,
+        reversible_cipher=base.reversible_cipher,
+        kms_provider=base.kms_provider,
+        kms_region=base.kms_region,
+        kms_key_id=base.kms_key_id,
+        kms_encryption_context=base.kms_encryption_context,
     )
 
 

@@ -20,19 +20,21 @@ pii_masker mask data.csv --auto --strategy fake -o clean.csv
 
 ## Features
 
-| Feature                   | Details                                                                                                      |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **10 masking strategies** | `fake`, `redact`, `hash`, `null`, `partial`, `keep`, `tokenize`, `pseudonymize`, `generalize`, `mask_format` |
-| **Reversible masking**    | AES-256-GCM — restore originals anytime with `--key`                                                         |
-| **Dual PII detection**    | Column-name heuristics + cell-value scanning (`detect_pii_by_value`)                                         |
-| **Multi-engine**          | Polars, Pandas, DuckDB, SQLAlchemy (live DB), XML, JSONPath                                                  |
-| **6 file formats**        | CSV, Parquet, JSON, NDJSON, Excel, XML                                                                       |
-| **Pipe-friendly**         | stdin → stdout, zero config required                                                                         |
-| **Reproducible fakes**    | `--seed` for deterministic output in CI/testing                                                              |
-| **Dry run + report**      | Preview masking plan before touching any data                                                                |
-| **PII detector**          | `detect` subcommand scans columns and cell values, prints sample values                                      |
-| **Profile-driven config** | `ProfileConfig` + `ColumnRuleMap` — load masking rules from YAML or Python dict                              |
-| **Python façade API**     | Import by feature — no internal sub-packages exposed                                                         |
+| Feature                   | Details                                                                                                                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **18 masking strategies** | `fake`, `redact`, `hash`, `pbkdf2`, `salted_hash`, `hmac`, `null`, `partial`, `truncate`, `keep`, `tokenize`, `pseudonymize`, `shuffle`, `anonymize`, `perturb`, `bucketize`, `generalize`, `mask_format` |
+| **Reversible masking**    | AES-256-GCM, ChaCha20-Poly1305, or KMS envelope — restore originals with `--key`, env var, or `~/.pii_masker/config.toml`                                                                                 |
+| **Verification**          | `--verify` re-scans masked output for leftover PII after writing                                                                                                                                          |
+| **Composite strategy**    | Chain multiple strategies in Python with optional reversible encryption                                                                                                                                   |
+| **Dual PII detection**    | Column-name heuristics + cell-value scanning (`detect_pii_by_value`)                                                                                                                                      |
+| **Multi-engine**          | Polars, Pandas, DuckDB, SQLAlchemy (live DB), XML, JSONPath                                                                                                                                               |
+| **6 file formats**        | CSV, Parquet, JSON, NDJSON, Excel, XML                                                                                                                                                                    |
+| **Pipe-friendly**         | stdin → stdout, zero config required                                                                                                                                                                      |
+| **Reproducible fakes**    | `--seed` for deterministic output in CI/testing                                                                                                                                                           |
+| **Dry run + report**      | Preview masking plan before touching any data                                                                                                                                                             |
+| **PII detector**          | `detect` subcommand scans columns and cell values, prints sample values                                                                                                                                   |
+| **Profile-driven config** | `ProfileConfig` + `ColumnRuleMap` — load masking rules from YAML or Python dict                                                                                                                           |
+| **Python façade API**     | Import by feature — no internal sub-packages exposed                                                                                                                                                      |
 
 ---
 
@@ -54,6 +56,8 @@ pip install iki-pii-masker
 pip install sqlalchemy psycopg2-binary   # SQLAlchemy adapter (live database)
 pip install jsonpath-ng                  # JSONPath adapter (nested JSON)
 pip install pyyaml                       # ProfileConfig YAML support
+pip install boto3>=1.30.0                 # AWS KMS envelope support
+pip install ecies pyffx ff3               # Optional reversible cipher support
 # XML uses stdlib xml.etree — no install needed (lxml optional for speed)
 ```
 
@@ -63,12 +67,13 @@ pip install pyyaml                       # ProfileConfig YAML support
 
 ## Subcommands
 
-| Command    | Purpose                                           |
-| ---------- | ------------------------------------------------- |
-| `mask`     | Apply a masking strategy to one or more columns   |
-| `unmask`   | Decrypt AES-GCM masked columns back to originals  |
-| `detect`   | Scan a file and suggest which columns contain PII |
-| `examples` | Print a cheat-sheet of usage patterns             |
+| Command            | Purpose                                             |
+| ------------------ | --------------------------------------------------- |
+| `mask`             | Apply a masking strategy to one or more columns     |
+| `unmask`           | Decrypt reversible masked columns back to originals |
+| `detect`           | Scan a file and suggest which columns contain PII   |
+| `validate-profile` | Validate a masking profile YAML file                |
+| `examples`         | Print a cheat-sheet of usage patterns               |
 
 ---
 
@@ -112,7 +117,20 @@ pii_masker mask data.parquet --auto --strategy redact --engine polars -o clean.p
 
 ### Reversible masking
 
-Encrypt columns so they can be restored later with the same key:
+Encrypt columns so they can be restored later with the same key. `AES-GCM` is the built-in default. You can also choose from additional reversible ciphers with `--reversible-cipher`.
+
+Supported reversible cipher names:
+
+- `aesgcm` (default)
+- `chacha20-poly1305`
+- `aes-ccm`
+- `aes-siv`
+- `aes-cbc-hmac`
+- `rsa-oaep`
+- `ecies` (optional dependency)
+- `ff1` (optional dependency)
+- `ff3-1` (optional dependency)
+- `kms-envelope` (optional AWS KMS envelope integration via `boto3`)
 
 ```bash
 # Mask
@@ -129,8 +147,77 @@ pii_masker unmask masked.csv \
   -o restored.csv
 ```
 
+```bash
+# AWS KMS envelope masking
+pii_masker mask data.csv \
+  --columns user_id:email \
+  --reversible \
+  --reversible-cipher kms-envelope \
+  --kms-provider aws \
+  --kms-key-id alias/my-key \
+  --kms-region us-east-1 \
+  --kms-encryption-context purpose=pii-mask \
+  -o masked.csv
+
+# AWS KMS envelope restore
+pii_masker unmask masked.csv \
+  --columns user_id:email \
+  --kms-provider aws \
+  --kms-region us-east-1 \
+  --kms-encryption-context purpose=pii-mask \
+  -o restored.csv
+```
+
+Install optional KMS support with:
+
+```bash
+pip install .[kms]
+```
+
+```bash
+# Use ChaCha20-Poly1305 instead of the default AES-GCM
+pii_masker mask data.csv \
+  --columns user_id:email \
+  --reversible \
+  --reversible-cipher chacha20-poly1305 \
+  --key "my-secret-key-2024" \
+  -o masked.csv
+```
+
+You can also supply the same secret from an environment variable or a user config file:
+
+```bash
+export PII_MASKER_KEY=my-secret-key-2024
+pii_masker mask data.csv --columns user_id:email --reversible -o masked.csv
+```
+
+Secret resolution order:
+
+- `--key` CLI option
+- `PII_MASKER_KEY` environment variable
+- `~/.pii_masker/config.toml`
+
 Encrypted values are stored as `ENC:<base64-token>` — safe to round-trip
 through CSV, Parquet, and JSON.
+
+`pii_masker unmask` also resolves the same secret from the same sources.
+
+### Profile-driven masking
+
+Load a masking profile from YAML instead of passing columns and strategy on the command line:
+
+```bash
+pii_masker mask data.csv \
+  --profile masking_profile.yaml \
+  --verify \
+  -o masked.csv
+```
+
+Use `validate-profile` to ensure a profile file is valid before running it in production:
+
+```bash
+pii_masker validate-profile masking_profile.yaml
+```
 
 ### Pipe-friendly
 
@@ -184,6 +271,16 @@ pii_masker mask data.csv \
   -o hashed.csv
 ```
 
+### PBKDF2 hashing with secret key
+
+```bash
+pii_masker mask data.csv \
+  --columns user_id:email \
+  --strategy pbkdf2 \
+  --key "super_secret_pbkdf2_key_2024" \
+  -o pbkdf2_hashed.csv
+```
+
 ### Null out sensitive columns
 
 ```bash
@@ -198,18 +295,26 @@ pii_masker mask report.xlsx \
 
 ## All Strategies
 
-| Strategy       | Output example     | Reversible?         | Best for                                         |
-| -------------- | ------------------ | ------------------- | ------------------------------------------------ |
-| `fake`         | `alice@fake.com`   | No                  | Realistic test/dev data                          |
-| `redact`       | `[EMAIL]`          | With `--reversible` | Audit logs, shared reports                       |
-| `hash`         | `SHA:3d7a2c1e9b4f` | With `--reversible` | Join keys, deduplication                         |
-| `null`         | `null`             | No                  | Dropping PII for analytics                       |
-| `partial`      | `****1234`         | No                  | Card numbers, phone numbers                      |
-| `keep`         | original value     | N/A                 | Whitelisting non-PII columns                     |
-| `tokenize`     | `TOK-3d7a2c1e`     | Via token table     | Stable opaque tokens; cross-run lookup possible  |
-| `pseudonymize` | `Barbara Clark`    | Via mapping dict    | Consistent fakes — same input → same fake output |
-| `generalize`   | `30-40` / `1990`   | No                  | Analytics bucketing — ages, dates, zip codes     |
-| `mask_format`  | `xxxx@xxxxxxx.xxx` | No                  | Format-preserving masking; keeps separators      |
+| Strategy       | Output example       | Reversible?         | Best for                                         |
+| -------------- | -------------------- | ------------------- | ------------------------------------------------ |
+| `fake`         | `alice@fake.com`     | No                  | Realistic test/dev data                          |
+| `redact`       | `[EMAIL]`            | With `--reversible` | Audit logs, shared reports                       |
+| `hash`         | `SHA:3d7a2c1e9b4f`   | With `--reversible` | Join keys, deduplication                         |
+| `pbkdf2`       | `PBKDF2:3d7a2c1e...` | No                  | Strong one-way hashing with a secret key or salt |
+| `salted_hash`  | `SALT:3d7a2c1e...`   | No                  | Salted deterministic hashing                     |
+| `hmac`         | `HMAC:3d7a2c1e...`   | No                  | HMAC-SHA256 keyed deterministic hashing          |
+| `null`         | `null`               | No                  | Dropping PII for analytics                       |
+| `partial`      | `****1234`           | No                  | Card numbers, phone numbers                      |
+| `truncate`     | `john...`            | No                  | Preserve prefix, discard the rest                |
+| `keep`         | original value       | N/A                 | Whitelisting non-PII columns                     |
+| `tokenize`     | `TOK-3d7a2c1e`       | Via token table     | Stable opaque tokens; cross-run lookup possible  |
+| `pseudonymize` | `Barbara Clark`      | Via mapping dict    | Consistent fakes — same input → same fake output |
+| `shuffle`      | random order         | No                  | Randomize values within one column               |
+| `anonymize`    | `ANON-001`           | No                  | Generic anonymous placeholders                   |
+| `perturb`      | `34.2` / `987.0`     | No                  | Slight noise for analytics-safe numeric values   |
+| `bucketize`    | `20-30`              | No                  | Coarse numeric bucketing                         |
+| `generalize`   | `30-40` / `1990`     | No                  | Analytics bucketing — ages, dates, zip codes     |
+| `mask_format`  | `xxxx@xxxxxxx.xxx`   | No                  | Format-preserving masking; keeps separators      |
 
 ### New strategy details
 
@@ -244,15 +349,24 @@ Arguments:
 Options:
   -o, --output PATH         Output file path. Omit to write to stdout.
   -c, --columns TEXT        Colon-separated column names. e.g. email:name:phone
-  -s, --strategy STRATEGY   fake|redact|hash|null|partial|keep|
-                            tokenize|pseudonymize|generalize|mask_format
-                            [default: redact]
+  -s, --strategy STRATEGY   fake|redact|hash|pbkdf2|salted_hash|hmac|null|partial|truncate|keep|
+                            tokenize|pseudonymize|shuffle|anonymize|perturb|bucketize|
+                            generalize|mask_format [default: redact]
   -e, --engine ENGINE       polars|pandas|duckdb  [default: polars]
   -f, --format FORMAT       csv|parquet|json|ndjson|excel|xml
                             (auto-detected from extension)
       --auto                Auto-detect PII columns by name heuristics
-      --reversible          Use AES-256-GCM reversible encryption
+      --reversible          Use reversible encryption for masked values
+      --reversible-cipher [aesgcm|chacha20-poly1305|aes-ccm|aes-siv|aes-cbc-hmac|rsa-oaep|ecies|ff1|ff3-1|kms-envelope]
+                            Choose the reversible cipher for --reversible
       --key TEXT            Secret key for reversible masking
+      --kms-provider TEXT   KMS provider used by kms-envelope (default: aws)
+      --kms-region TEXT     KMS region for kms-envelope operations
+      --kms-key-id TEXT     KMS key identifier required for kms-envelope
+      --kms-encryption-context TEXT
+                            KMS encryption context entries for kms-envelope
+      --profile PATH        Load masking columns/rules from a YAML profile
+      --verify              Verify masked output for remaining PII after write
       --salt TEXT           Salt prepended before hashing  [default: ""]
       --seed INTEGER        RNG seed for reproducible fake data
       --partial-keep INT    Number of characters to keep  [default: 4]
@@ -276,6 +390,8 @@ Options:
   -f, --format FORMAT       csv|parquet|json|ndjson|excel
 ```
 
+> `--key` can also be omitted when `PII_MASKER_KEY` is set or `~/.pii_masker/config.toml`
+
 ### `pii_masker detect`
 
 ```
@@ -287,6 +403,15 @@ Options:
   -e, --engine ENGINE       polars|pandas|duckdb  [default: polars]
       --samples INTEGER     Sample values to show per column  [default: 3]
 ```
+
+### `pii_masker validate-profile`
+
+```
+Arguments:
+  PROFILE_FILE             YAML profile path to validate
+```
+
+Validate a YAML masking profile before using it in production.
 
 ---
 
@@ -310,30 +435,32 @@ from Iki_PII_Masker.facade import create_jsonpath_adapter  # nested JSON
 from Iki_PII_Masker.facade import report_detection, report_masking
 from Iki_PII_Masker.facade import ProfileConfig, ColumnRuleMap
 from Iki_PII_Masker.facade import Strategy, Engine, FileFormat
+from Iki_PII_Masker.facade import CompositeStrategy
 ```
 
 ### Façade feature reference
 
-| Feature                                                | What it does                                                           |
-| ------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `detect_pii(columns)`                                  | Scan column _names_ → `{col: PIIType}` for every PII match             |
-| `detect_pii_by_value(adapter, sample_rows, threshold)` | Scan actual cell _values_ — catches generic column names like `col_7`  |
-| `mask_dataframe(adapter, columns, strategy, context)`  | Apply any of 10 strategies to named columns; returns elapsed seconds   |
-| `unmask_dataframe(adapter, columns, key)`              | Reverse AES-256-GCM masking in-place                                   |
-| `load_data(adapter, source, fmt)`                      | Load a file, path, `BytesIO`, or `None` (stdin) into an adapter        |
-| `save_data(adapter, dest, fmt)`                        | Write adapter data to a file, `BytesIO`, or `None` (stdout)            |
-| `make_context(**kwargs)`                               | Build a plain `MaskingContext` (salt, seed, partial options)           |
-| `make_reversible_context(secret)`                      | Build a context that AES-encrypts every value; key derived from secret |
-| `derive_encryption_key(secret)`                        | Derive 32-byte AES key from a secret string                            |
-| `create_adapter(engine)`                               | Instantiate a Polars, Pandas, or DuckDB adapter                        |
-| `create_sql_adapter(url, table)`                       | Mask a live database table via SQLAlchemy                              |
-| `create_xml_adapter(xpath, fields)`                    | Mask XML documents by XPath row selector                               |
-| `create_jsonpath_adapter(paths)`                       | Mask nested JSON by JSONPath expressions                               |
-| `ProfileConfig.from_yaml(path)`                        | Load masking rules from a YAML file                                    |
-| `ProfileConfig.from_dict(data)`                        | Build masking rules from a Python dict                                 |
-| `ColumnRuleMap({col: Strategy})`                       | Per-column strategy map with a single `.apply(adapter)` call           |
-| `report_detection(adapter, detected, file)`            | Print Rich PII detection table with sample values                      |
-| `report_masking(adapter, col_map, strategy, elapsed)`  | Print Rich masking summary table                                       |
+| Feature                                                | What it does                                                               |
+| ------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `detect_pii(columns)`                                  | Scan column _names_ → `{col: PIIType}` for every PII match                 |
+| `detect_pii_by_value(adapter, sample_rows, threshold)` | Scan actual cell _values_ — catches generic column names like `col_7`      |
+| `mask_dataframe(adapter, columns, strategy, context)`  | Apply any of 10 strategies to named columns; returns elapsed seconds       |
+| `unmask_dataframe(adapter, columns, key)`              | Reverse reversible masking in-place                                        |
+| `load_data(adapter, source, fmt)`                      | Load a file, path, `BytesIO`, or `None` (stdin) into an adapter            |
+| `save_data(adapter, dest, fmt)`                        | Write adapter data to a file, `BytesIO`, or `None` (stdout)                |
+| `make_context(**kwargs)`                               | Build a plain `MaskingContext` (salt, seed, partial options)               |
+| `make_reversible_context(secret)`                      | Build a reversible masking context; supports AES-GCM and ChaCha20-Poly1305 |
+| `derive_encryption_key(secret)`                        | Derive 32-byte AES key from a secret string                                |
+| `create_adapter(engine)`                               | Instantiate a Polars, Pandas, or DuckDB adapter                            |
+| `create_sql_adapter(url, table)`                       | Mask a live database table via SQLAlchemy                                  |
+| `create_xml_adapter(xpath, fields)`                    | Mask XML documents by XPath row selector                                   |
+| `create_jsonpath_adapter(paths)`                       | Mask nested JSON by JSONPath expressions                                   |
+| `ProfileConfig.from_yaml(path)`                        | Load masking rules from a YAML file                                        |
+| `ProfileConfig.from_dict(data)`                        | Build masking rules from a Python dict                                     |
+| `CompositeStrategy(strategies)`                        | Chain multiple masking strategies together in Python                       |
+| `ColumnRuleMap({col: Strategy})`                       | Per-column strategy map with a single `.apply(adapter)` call               |
+| `report_detection(adapter, detected, file)`            | Print Rich PII detection table with sample values                          |
+| `report_masking(adapter, col_map, strategy, elapsed)`  | Print Rich masking summary table                                           |
 
 ### Detection
 
@@ -436,6 +563,24 @@ save_data(adapter, Path("masked.csv"))
 key = derive_encryption_key(SECRET)
 load_data(adapter2, Path("masked.csv"))
 unmask_dataframe(adapter2, ["email", "user_id"], key)
+```
+
+**Composite strategy — chain strategies with optional final encryption:**
+
+```python
+from Iki_PII_Masker.facade import mask_dataframe, make_reversible_context
+from Iki_PII_Masker.strategies import CompositeStrategy, RedactStrategy, MaskFormatStrategy
+
+strategy = CompositeStrategy([
+    RedactStrategy(),
+    MaskFormatStrategy(),
+])
+ctx = make_reversible_context(
+    "my-production-secret-2024",
+    reversible_cipher="chacha20-poly1305",
+)
+
+mask_dataframe(adapter, "email:credit_card", strategy, ctx)
 ```
 
 **Multi-strategy pipeline on one adapter:**

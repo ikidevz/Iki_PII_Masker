@@ -140,6 +140,12 @@ class ProfileConfig:
     salt:             str = ""
     partial_keep:     int = 4
     partial_side:     str = "right"
+    truncate_keep:    int = 4
+    bucket_step:      int = 10
+    date_precision:   str = "year"
+    anonymize_prefix: str = "ANON"
+    perturbation_scale: float = 0.1
+    perturbation_days: int = 7
 
     # ── constructors ──────────────────────────────────────────────────────────
 
@@ -179,6 +185,12 @@ class ProfileConfig:
             salt=data.get("salt", ""),
             partial_keep=int(data.get("partial_keep", 4)),
             partial_side=data.get("partial_side", "right"),
+            truncate_keep=int(data.get("truncate_keep", 4)),
+            bucket_step=int(data.get("bucket_step", 10)),
+            date_precision=data.get("date_precision", "year"),
+            anonymize_prefix=data.get("anonymize_prefix", "ANON"),
+            perturbation_scale=float(data.get("perturbation_scale", 0.1)),
+            perturbation_days=int(data.get("perturbation_days", 7)),
         )
 
     # ── convenience builders ──────────────────────────────────────────────────
@@ -196,6 +208,12 @@ class ProfileConfig:
             seed=self.seed,
             partial_keep=self.partial_keep,
             partial_side=self.partial_side,
+            truncate_keep=self.truncate_keep,
+            bucket_step=self.bucket_step,
+            date_precision=self.date_precision,
+            anonymize_prefix=self.anonymize_prefix,
+            perturbation_scale=self.perturbation_scale,
+            perturbation_days=self.perturbation_days,
         )
 
     # ── apply ─────────────────────────────────────────────────────────────────
@@ -204,6 +222,7 @@ class ProfileConfig:
         self,
         adapter:  Any,
         *,
+        context: Any | None = None,
         dry_run:  bool = False,
         progress: bool = False,
     ) -> float:
@@ -214,7 +233,7 @@ class ProfileConfig:
         """
         from ..facade import mask_dataframe, detect_pii
 
-        ctx = self.to_context()
+        ctx = context or self.to_context()
         elapsed = 0.0
 
         # ── explicit column rules ─────────────────────────────────────────────
@@ -247,26 +266,38 @@ class ProfileConfig:
             raise ImportError("pip install pyyaml")
 
         data = {
-            "engine":        self.engine.value,
-            "strategy":      self.default_strategy.value,
-            "auto":          self.auto,
-            "seed":          self.seed,
-            "salt":          self.salt,
-            "partial_keep":  self.partial_keep,
-            "partial_side":  self.partial_side,
-            "columns":       {c: s.value for c, s in self.columns.items()},
+            "engine":            self.engine.value,
+            "strategy":          self.default_strategy.value,
+            "auto":              self.auto,
+            "seed":              self.seed,
+            "salt":              self.salt,
+            "partial_keep":      self.partial_keep,
+            "partial_side":      self.partial_side,
+            "truncate_keep":     self.truncate_keep,
+            "bucket_step":       self.bucket_step,
+            "date_precision":    self.date_precision,
+            "anonymize_prefix":   self.anonymize_prefix,
+            "perturbation_scale": self.perturbation_scale,
+            "perturbation_days":  self.perturbation_days,
+            "columns":           {c: s.value for c, s in self.columns.items()},
         }
         Path(path).write_text(
             yaml.dump(data, default_flow_style=False), encoding="utf-8")
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "engine":        self.engine.value,
-            "strategy":      self.default_strategy.value,
-            "auto":          self.auto,
-            "seed":          self.seed,
-            "salt":          self.salt,
-            "partial_keep":  self.partial_keep,
-            "partial_side":  self.partial_side,
-            "columns":       {c: s.value for c, s in self.columns.items()},
+            "engine":            self.engine.value,
+            "strategy":          self.default_strategy.value,
+            "auto":              self.auto,
+            "seed":              self.seed,
+            "salt":              self.salt,
+            "partial_keep":      self.partial_keep,
+            "partial_side":      self.partial_side,
+            "truncate_keep":     self.truncate_keep,
+            "bucket_step":       self.bucket_step,
+            "date_precision":    self.date_precision,
+            "anonymize_prefix":   self.anonymize_prefix,
+            "perturbation_scale": self.perturbation_scale,
+            "perturbation_days":  self.perturbation_days,
+            "columns":           {c: s.value for c, s in self.columns.items()},
         }

@@ -17,6 +17,7 @@ from Iki_PII_Masker.strategies.fake import FakeStrategy
 from Iki_PII_Masker.strategies.redact import RedactStrategy
 from Iki_PII_Masker.strategies.tokenize import TokenizeStrategy
 from Iki_PII_Masker.strategies.pseudonymize import PseudonymizeStrategy
+from Iki_PII_Masker.strategies.partial import PartialStrategy
 from Iki_PII_Masker.strategies.generalize import GeneralizeStrategy
 from Iki_PII_Masker.strategies.mask_format import MaskFormatStrategy
 
@@ -120,7 +121,25 @@ def test_hash_no_salt_matches_sha256():
     assert _mask(Strategy.hash, value) == expected
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+def test_pbkdf2_requires_salt_or_key():
+    with pytest.raises(ValueError):
+        _mask(Strategy.pbkdf2, "alice@example.com")
+
+
+def test_pbkdf2_outputs_prefix():
+    result = _mask(Strategy.pbkdf2, "alice@example.com",
+                   ctx=MaskingContext(salt="s1"))
+    assert result.startswith("PBKDF2:")
+    assert len(result) == 7 + 32
+
+
+def test_pbkdf2_deterministic_with_salt():
+    ctx = MaskingContext(salt="pepper")
+    assert _mask(Strategy.pbkdf2, "alice@example.com", ctx=ctx) == \
+        _mask(Strategy.pbkdf2, "alice@example.com", ctx=ctx)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # fake
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -217,6 +236,38 @@ def test_wrong_key_raises():
     enc = _mask(Strategy.redact, "alice@example.com", ctx=ctx)
     with pytest.raises(Exception):
         decrypt_value(str(enc), wrong)
+
+
+def test_reversible_chacha20_poly1305_round_trip():
+    key = derive_encryption_key("mysecret")
+    ctx = MaskingContext(
+        reversible=True,
+        key_bytes=key,
+        reversible_cipher="chacha20-poly1305",
+    )
+    encrypted = _mask(Strategy.redact, "alice@example.com", ctx=ctx)
+    assert str(encrypted).startswith("ENC-CHACHA:")
+    assert decrypt_value(str(encrypted), key) == "alice@example.com"
+
+
+def test_composite_strategy_applies_multiple_steps():
+    from Iki_PII_Masker.strategies.composite import CompositeStrategy
+    strategy = CompositeStrategy([RedactStrategy(), PartialStrategy()])
+    ctx = MaskingContext(partial_keep=4, partial_side="right")
+    result = strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx)
+    assert isinstance(result, str)
+    assert result != "alice@example.com"
+
+
+def test_composite_strategy_reversible_encrypts():
+    from Iki_PII_Masker.strategies.composite import CompositeStrategy
+    key = derive_encryption_key("secret")
+    strategy = CompositeStrategy([RedactStrategy()])
+    ctx = MaskingContext(reversible=True, key_bytes=key)
+    encrypted = strategy.mask(
+        "alice@example.com", PIIRegistry.get("email"), ctx)
+    assert str(encrypted).startswith("ENC:")
+    assert decrypt_value(str(encrypted), key) == "[EMAIL]"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -417,3 +468,120 @@ def test_mask_format_via_strategy_enum():
     result = _mask(Strategy.mask_format, "john@example.com", "email")
     assert "@" in str(result)
     assert "*" in str(result)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# salted_hash
+# ══════════════════════════════════════════════════════════════════════
+
+def test_salted_hash_prefix():
+    result = _mask(Strategy.salted_hash, "alice@example.com",
+                   ctx=MaskingContext(salt="pepper"))
+    assert result.startswith("SALT:")
+    assert len(result) == 5 + 16
+
+
+def test_salted_hash_requires_secret_or_salt():
+    with pytest.raises(ValueError):
+        _mask(Strategy.salted_hash, "alice@example.com")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# hmac
+# ══════════════════════════════════════════════════════════════════════
+
+def test_hmac_prefix():
+    result = _mask(Strategy.hmac, "alice@example.com",
+                   ctx=MaskingContext(key="secret"))
+    assert result.startswith("HMAC:")
+    assert len(result) == 5 + 16
+
+
+def test_hmac_requires_secret_or_salt():
+    with pytest.raises(ValueError):
+        _mask(Strategy.hmac, "alice@example.com")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# truncate
+# ══════════════════════════════════════════════════════════════════════
+
+def test_truncate_keeps_prefix():
+    result = _mask(Strategy.truncate, "alice@example.com",
+                   ctx=MaskingContext(truncate_keep=5))
+    assert result == "alice"
+
+
+def test_truncate_short_value_unchanged():
+    assert _mask(Strategy.truncate, "bob",
+                 ctx=MaskingContext(truncate_keep=10)) == "bob"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# shuffle
+# ══════════════════════════════════════════════════════════════════════
+
+def test_shuffle_same_input_stable_same_instance():
+    strategy = StrategyFactory.create(Strategy.shuffle)
+    ctx = MaskingContext(seed=42)
+    first = strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx)
+    second = strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx)
+    assert first == second
+
+
+def test_shuffle_different_values_differ():
+    strategy = StrategyFactory.create(Strategy.shuffle)
+    ctx = MaskingContext(seed=42)
+    assert strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx) != \
+        strategy.mask("bob@example.com", PIIRegistry.get("email"), ctx)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# bucketize
+# ══════════════════════════════════════════════════════════════════════
+
+def test_bucketize_numeric():
+    result = _mask(Strategy.bucketize, "34",
+                   ctx=MaskingContext(bucket_step=10))
+    assert result == "30-40"
+
+
+def test_bucketize_date_year():
+    result = _mask(Strategy.bucketize, "1990-07-15",
+                   ctx=MaskingContext(date_precision="year"))
+    assert result == "1990"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# anonymize
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_anonymize_consistent():
+    strategy = StrategyFactory.create(Strategy.anonymize)
+    ctx = MaskingContext()
+    a = strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx)
+    b = strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx)
+    assert a == b
+
+
+def test_anonymize_unique_for_different_inputs():
+    strategy = StrategyFactory.create(Strategy.anonymize)
+    ctx = MaskingContext()
+    assert strategy.mask("alice@example.com", PIIRegistry.get("email"), ctx) != \
+        strategy.mask("bob@example.com", PIIRegistry.get("email"), ctx)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# perturb
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_perturb_numeric():
+    result = _mask(Strategy.perturb, "100", ctx=MaskingContext(
+        seed=42, perturbation_scale=0.1))
+    assert result != "100"
+
+
+def test_perturb_date():
+    result = _mask(Strategy.perturb, "1990-07-15",
+                   ctx=MaskingContext(seed=42, perturbation_days=3))
+    assert result != "1990-07-15"

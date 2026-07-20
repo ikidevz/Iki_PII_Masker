@@ -42,9 +42,22 @@ class PandasAdapter(BaseDataFrameAdapter):
         self._df[col] = self._df[col].map(
             lambda v: strategy.mask(v, pii_type, ctx))
 
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None:
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None:
         self._df[col] = self._df[col].map(
-            lambda v: decrypt_value(str(v), key_bytes))
+            lambda v: decrypt_value(
+                str(v),
+                key_bytes,
+                kms_provider=kms_provider,
+                kms_region=kms_region,
+                kms_encryption_context=kms_encryption_context,
+            ))
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:
         return self._df[col].dropna().tolist()[:n]

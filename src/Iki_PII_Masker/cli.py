@@ -3,7 +3,19 @@ import argparse
 
 from pathlib import Path
 from rich.console import Console
-from .config import Strategy, Engine, FileFormat, derive_key, PIIRegistry, exit_error
+from .config import (
+    SUPPORTED_REVERSIBLE_CIPHERS,
+    Strategy,
+    Engine,
+    FileFormat,
+    derive_key,
+    resolve_secret,
+    PIIRegistry,
+    ProfileConfig,
+    exit_error,
+)
+from .config.crypto import _normalize_cipher
+from .facade import detect_pii, detect_pii_by_value
 from .strategies import MaskingContext
 from .adapters import AdapterFactory
 from .service import MaskingService
@@ -30,6 +42,20 @@ def _add_engine_fmt(p: argparse.ArgumentParser) -> None:
         default=None,
         help="File format — auto-detected from extension when omitted.",
     )
+
+
+def _parse_kms_encryption_context(values: list[str] | None) -> dict[str, str] | None:
+    if not values:
+        return None
+    context: dict[str, str] = {}
+    for item in values:
+        if "=" not in item:
+            exit_error(
+                "Invalid --kms-encryption-context value. Use KEY=VALUE."
+            )
+        key, value = item.split("=", 1)
+        context[key] = value
+    return context
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -78,6 +104,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Strategy.redact.value,
         help="Masking strategy (default: redact).",
     )
+    mask_p.add_argument(
+        "--profile", type=Path, default=None,
+        help="Load masking rules from a YAML profile (see ProfileConfig).",
+    )
     _add_engine_fmt(mask_p)
     mask_p.add_argument(
         "--auto", action="store_true",
@@ -85,11 +115,39 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mask_p.add_argument(
         "--reversible", action="store_true",
-        help="Use AES-256-GCM reversible encryption.",
+        help="Use reversible encryption for masked values.",
+    )
+    mask_p.add_argument(
+        "--reversible-cipher", default="aesgcm",
+        choices=SUPPORTED_REVERSIBLE_CIPHERS,
+        help=(
+            "Which reversible cipher to use when --reversible is set. "
+            "Additional modes are optional and may require extra dependencies."
+        ),
     )
     mask_p.add_argument(
         "--key", default=None,
-        help="Secret key for reversible masking (required with --reversible).",
+        help="Secret key for reversible masking (required with --reversible unless using kms-envelope).",
+    )
+    mask_p.add_argument(
+        "--kms-provider", default=None,
+        help="KMS provider used by kms-envelope (default: aws).",
+    )
+    mask_p.add_argument(
+        "--kms-region", default=None,
+        help="KMS region for kms-envelope operations.",
+    )
+    mask_p.add_argument(
+        "--kms-key-id", default=None,
+        help="KMS key identifier required for kms-envelope.",
+    )
+    mask_p.add_argument(
+        "--kms-encryption-context", action="append", default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "KMS encryption context entries for kms-envelope. "
+            "Specify multiple times."
+        ),
     )
     mask_p.add_argument(
         "--salt", default="",
@@ -114,6 +172,10 @@ def _build_parser() -> argparse.ArgumentParser:
     mask_p.add_argument(
         "--report", action="store_true",
         help="Print a masking summary table after processing.",
+    )
+    mask_p.add_argument(
+        "--verify", action="store_true",
+        help="Verify the masked output contains no remaining PII.",
     )
     mask_p.add_argument(
         "--no-progress", action="store_true",
@@ -143,8 +205,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Colon-separated columns to decrypt.",
     )
     unmask_p.add_argument(
-        "--key", required=True,
-        help="Secret key used during masking.",
+        "--key", default=None,
+        help=(
+            "Secret key used during masking. "
+            "Optional for KMS envelope tokens, or resolved from $PII_MASKER_KEY/config."
+        ),
+    )
+    unmask_p.add_argument(
+        "--salt", default="",
+        help="Salt used during reversible masking (same value as --salt on mask).",
+    )
+    unmask_p.add_argument(
+        "--kms-provider", default=None,
+        help="KMS provider used by kms-envelope tokens.",
+    )
+    unmask_p.add_argument(
+        "--kms-region", default=None,
+        help="KMS region for kms-envelope token decryption.",
+    )
+    unmask_p.add_argument(
+        "--kms-encryption-context", action="append", default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "KMS encryption context entries for kms-envelope decryption. "
+            "Specify multiple times."
+        ),
     )
     _add_engine_fmt(unmask_p)
 
@@ -170,6 +255,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_engine_fmt(detect_p)
 
+    # ── validate-profile ─────────────────────────────────────────────────────
+    validate_p = sub.add_parser(
+        "validate-profile",
+        help="Validate a masking profile YAML file.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Validate a ProfileConfig YAML file and report syntax or schema issues."
+        ),
+    )
+    validate_p.add_argument(
+        "profile",
+        type=Path,
+        help="Path to a ProfileConfig YAML file.",
+    )
+
     # ── examples ──────────────────────────────────────────────────────────────
     sub.add_parser("examples", help="Show usage examples and cheat-sheet.")
 
@@ -180,21 +280,100 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _cmd_mask(args: argparse.Namespace) -> None:
     # validation
-    if args.reversible and not args.key:
-        exit_error("--reversible requires --key <secret>.")
-    if not args.columns and not args.auto:
-        exit_error("Specify --columns, --auto, or both.")
+    if not args.profile and not args.columns and not args.auto:
+        exit_error("Specify --columns, --auto, or --profile.")
+    if args.profile and (args.columns or args.auto or args.strategy != Strategy.redact.value):
+        exit_error(
+            "--profile cannot be combined with --columns, --auto, or --strategy.")
+    if args.verify and not args.output:
+        exit_error("--verify requires --output to write and verify output file.")
 
+    fmt = FileFormat(args.fmt) if args.fmt else None
+    if args.profile:
+        profile = ProfileConfig.from_yaml(args.profile)
+        ctx = profile.to_context()
+        if args.salt:
+            ctx.salt = args.salt
+        if args.reversible:
+            cipher_name = _normalize_cipher(args.reversible_cipher)
+            if cipher_name == "kms-envelope":
+                if not args.kms_key_id:
+                    exit_error("--kms-key-id is required for kms-envelope.")
+                key_bytes = b""
+            else:
+                secret = resolve_secret(args.key)
+                key_bytes = derive_key(secret, salt=ctx.salt.encode("utf-8"))
+            ctx.key_bytes = key_bytes
+            ctx.reversible = True
+            ctx.reversible_cipher = args.reversible_cipher
+            ctx.kms_provider = args.kms_provider
+            ctx.kms_region = args.kms_region
+            ctx.kms_key_id = args.kms_key_id
+            ctx.kms_encryption_context = _parse_kms_encryption_context(
+                args.kms_encryption_context
+            )
+        adapter = AdapterFactory.create(profile.engine)
+
+        try:
+            source_fmt = load_adapter(adapter, args.input_file, fmt)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            exit_error(f"Error loading data: {exc}")
+
+        masked_columns = set(profile.columns.keys())
+        if profile.auto:
+            masked_columns.update(
+                c for c in detect_pii(adapter.columns) if c not in masked_columns
+            )
+
+        elapsed = profile.apply(
+            adapter,
+            context=ctx,
+            dry_run=args.dry_run,
+            progress=not args.no_progress,
+        )
+
+        if not args.dry_run:
+            try:
+                save_adapter(adapter, args.output, fmt, source_fmt)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                exit_error(f"Error writing output: {exc}")
+            if args.verify:
+                _verify_output(masked_columns, args.output,
+                               fmt, profile.engine)
+
+        Reporter.success(profile.columns, adapter.row_count(), elapsed)
+        return
+
+    key_bytes = b""
+    if args.reversible:
+        cipher_name = _normalize_cipher(args.reversible_cipher)
+        if cipher_name == "kms-envelope":
+            if not args.kms_key_id:
+                exit_error("--kms-key-id is required for kms-envelope.")
+        else:
+            secret = resolve_secret(args.key)
+            key_bytes = derive_key(secret, salt=args.salt.encode("utf-8"))
     ctx = MaskingContext(
         reversible=args.reversible,
-        key_bytes=derive_key(args.key) if args.key else b"",
+        key_bytes=key_bytes,
+        key=args.key if args.key and not args.reversible else None,
         salt=args.salt,
         seed=args.seed,
         partial_keep=args.partial_keep,
         partial_side=args.partial_side,
+        reversible_cipher=args.reversible_cipher,
+        kms_provider=args.kms_provider,
+        kms_region=args.kms_region,
+        kms_key_id=args.kms_key_id,
+        kms_encryption_context=_parse_kms_encryption_context(
+            args.kms_encryption_context
+        ),
     )
     adapter = AdapterFactory.create(Engine(args.engine))
-    fmt = FileFormat(args.fmt) if args.fmt else None
 
     try:
         source_fmt = load_adapter(adapter, args.input_file, fmt)
@@ -215,6 +394,8 @@ def _cmd_mask(args: argparse.Namespace) -> None:
             raise
         except Exception as exc:
             exit_error(f"Error writing output: {exc}")
+        if args.verify:
+            _verify_output(set(col_map), args.output, fmt, Engine(args.engine))
 
     if args.report or args.dry_run:
         Reporter.masking_report(col_map, Strategy(args.strategy),
@@ -234,7 +415,20 @@ def _cmd_unmask(args: argparse.Namespace) -> None:
     except Exception as exc:
         exit_error(f"Error loading data: {exc}")
 
-    key_bytes = derive_key(args.key)
+    secret = None
+    key_bytes = b""
+    if args.key is not None:
+        secret = resolve_secret(args.key)
+        key_bytes = derive_key(secret, salt=args.salt.encode("utf-8"))
+    else:
+        try:
+            secret = resolve_secret(None)
+            key_bytes = derive_key(secret, salt=args.salt.encode("utf-8"))
+        except SystemExit:
+            key_bytes = b""
+    kms_encryption_context = _parse_kms_encryption_context(
+        args.kms_encryption_context
+    )
     for col in args.columns.split(":"):
         col = col.strip()
         if not col:
@@ -243,7 +437,13 @@ def _cmd_unmask(args: argparse.Namespace) -> None:
             exit_error(
                 f"Column '{col}' not found. Available: {', '.join(adapter.columns)}")
         try:
-            adapter.apply_unmask(col, key_bytes)
+            adapter.apply_unmask(
+                col,
+                key_bytes,
+                kms_provider=args.kms_provider,
+                kms_region=args.kms_region,
+                kms_encryption_context=kms_encryption_context,
+            )
         except Exception as exc:
             exit_error(f"Decryption failed for '{col}': {exc}")
 
@@ -271,6 +471,39 @@ def _cmd_detect(args: argparse.Namespace) -> None:
 
     detected = PIIRegistry.detect(adapter.columns)
     Reporter.detect_report(adapter, detected, args.input_file, args.samples)
+
+
+def _cmd_validate_profile(args: argparse.Namespace) -> None:
+    try:
+        ProfileConfig.from_yaml(args.profile)
+    except ImportError as exc:
+        exit_error(str(exc))
+    except Exception as exc:
+        exit_error(f"Profile validation failed: {exc}")
+
+    console.print(f"[green]✓[/] Profile '{args.profile}' is valid.")
+
+
+def _verify_output(
+    columns: set[str],
+    output: Path,
+    fmt: FileFormat | None,
+    engine: Engine,
+) -> None:
+    verify_adapter = AdapterFactory.create(engine)
+    try:
+        load_adapter(verify_adapter, output, fmt)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        exit_error(f"Error loading output for verification: {exc}")
+
+    leftovers = detect_pii_by_value(verify_adapter)
+    failed = {col: pii for col, pii in leftovers.items() if col in columns}
+    if failed:
+        Reporter.verification_failed(failed)
+        exit_error("Masked output verification failed.")
+    Reporter.verification_success()
 
 
 def _cmd_examples() -> None:
@@ -319,9 +552,14 @@ def main() -> None:
     args = parser.parse_args()
 
     dispatch = {
-        "mask":     _cmd_mask,
-        "unmask":   _cmd_unmask,
-        "detect":   _cmd_detect,
+        "mask":              _cmd_mask,
+        "unmask":            _cmd_unmask,
+        "detect":            _cmd_detect,
+        "validate-profile": _cmd_validate_profile,
         "examples": lambda _: _cmd_examples(),
     }
     dispatch[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

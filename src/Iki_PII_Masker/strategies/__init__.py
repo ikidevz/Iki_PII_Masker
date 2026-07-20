@@ -4,12 +4,21 @@ from .keep import KeepStrategy
 from .null import NullStrategy
 from .redact import RedactStrategy
 from .hash import HashStrategy
+from .pbkdf2 import PBKDF2Strategy
+from .salted_hash import SaltedHashStrategy
+from .hmac import HMACStrategy
 from .fake import FakeStrategy
 from .generalize import GeneralizeStrategy
 from .partial import PartialStrategy
+from .truncate import TruncateStrategy
 from .pseudonymize import PseudonymizeStrategy
 from .tokenize import TokenizeStrategy
+from .shuffle import ShuffleStrategy
+from .anonymize import AnonymizeStrategy
+from .perturb import PerturbStrategy
+from .bucketize import BucketizeStrategy
 from .mask_format import MaskFormatStrategy
+from .composite import CompositeStrategy
 
 
 __all__ = [
@@ -21,10 +30,19 @@ __all__ = [
     'NullStrategy',
     'RedactStrategy',
     'HashStrategy',
+    'PBKDF2Strategy',
+    'SaltedHashStrategy',
+    'HMACStrategy',
     'FakeStrategy',
     'PartialStrategy',
+    'TruncateStrategy',
     'GeneralizeStrategy',
     'PseudonymizeStrategy',
+    'ShuffleStrategy',
+    'AnonymizeStrategy',
+    'PerturbStrategy',
+    'BucketizeStrategy',
     'MaskFormatStrategy',
-    'TokenizeStrategy'
+    'TokenizeStrategy',
+    'CompositeStrategy'
 ]

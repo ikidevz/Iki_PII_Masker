@@ -45,11 +45,26 @@ class PolarsAdapter(BaseDataFrameAdapter):
                       for v in self._df[col].to_list()])
         )
 
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None:
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None:
         import polars as pl
         self._df = self._df.with_columns(
-            pl.Series(col, [decrypt_value(str(v), key_bytes)
-                      for v in self._df[col].to_list()])
+            pl.Series(col, [
+                decrypt_value(
+                    str(v),
+                    key_bytes,
+                    kms_provider=kms_provider,
+                    kms_region=kms_region,
+                    kms_encryption_context=kms_encryption_context,
+                )
+                for v in self._df[col].to_list()
+            ])
         )
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:

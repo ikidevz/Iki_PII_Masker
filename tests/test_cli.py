@@ -6,22 +6,26 @@ Every test calls the real CLI binary so the full stack
 """
 
 import csv
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-CLI = ["pii_masker"]
+CLI = [sys.executable, "-m", "Iki_PII_Masker.cli"]
 
 
 def run(*args, input_text: str = None) -> subprocess.CompletedProcess:
+    env = {**dict(os.environ), "PYTHONPATH": str(ROOT / "src")}
     return subprocess.run(
         [*CLI, *args],
         capture_output=True,
         text=True,
         input=input_text,
         cwd=str(ROOT),
+        env=env,
     )
 
 
@@ -144,6 +148,133 @@ def test_mask_auto_plus_explicit(csv_file, tmp_path):
     assert all(v == "[REDACTED]" for v in csv_col(out, "revenue"))
 
 
+def test_mask_with_profile_yaml(csv_file, tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        """
+        engine: polars
+        seed: 42
+        columns:
+          email: fake
+          full_name: pseudonymize
+        auto: false
+        """
+    )
+    out = tmp_path / "out.csv"
+    r = run("mask", str(csv_file), "--profile", str(profile), "-o", str(out))
+    assert r.returncode == 0
+    assert out.exists()
+    assert all(v not in ("alice@example.com", "bob@corp.org", "carol@test.net",
+               "dave@email.com", "eve@sample.io") for v in csv_col(out, "email"))
+    assert all(v not in ("Alice Smith", "Bob Jones", "Carol White",
+               "Dave Brown", "Eve Davis") for v in csv_col(out, "full_name"))
+
+
+def test_mask_with_profile_yaml_reversible(csv_file, tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        """
+        engine: polars
+        seed: 42
+        salt: pepper
+        columns:
+          email: fake
+        auto: false
+        """
+    )
+    masked = tmp_path / "masked.csv"
+    restored = tmp_path / "restored.csv"
+
+    r = run(
+        "mask", str(csv_file), "--profile", str(profile), "--reversible",
+        "--key", "secret123", "--salt", "pepper", "-o", str(masked),
+    )
+    assert r.returncode == 0
+    assert all(v.startswith("ENC:") for v in csv_col(masked, "email"))
+
+    r = run(
+        "unmask", str(masked), "-c", "email",
+        "--key", "secret123", "--salt", "pepper", "-o", str(restored),
+    )
+    assert r.returncode == 0
+    assert csv_col(restored, "email") == csv_col(csv_file, "email")
+
+
+def test_mask_with_env_key_and_verify(csv_file, tmp_path, monkeypatch):
+    out = tmp_path / "out.csv"
+    monkeypatch.setenv("PII_MASKER_KEY", "secret123")
+
+    r = run(
+        "mask", str(csv_file), "-c", "email", "-s", "redact",
+        "--reversible", "--salt", "pepper", "--verify", "-o", str(out),
+    )
+    assert r.returncode == 0
+    assert "verification passed" in (r.stdout + r.stderr).lower()
+
+    r = run("unmask", str(out), "-c", "email", "--salt",
+            "pepper", "-o", str(tmp_path / "restored.csv"))
+    assert r.returncode == 0
+
+
+def test_unmask_with_config_key(csv_file, tmp_path, monkeypatch):
+    config_dir = tmp_path / ".pii_masker"
+    config_dir.mkdir()
+    config_file = config_dir / "config.toml"
+    config_file.write_text('key = "secret123"')
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    masked = tmp_path / "masked.csv"
+    restored = tmp_path / "restored.csv"
+
+    r = run(
+        "mask", str(csv_file), "-c", "email", "-s", "redact",
+        "--reversible", "--salt", "pepper", "--key", "secret123", "-o", str(
+            masked),
+    )
+    assert r.returncode == 0
+
+    r = run("unmask", str(masked), "-c", "email",
+            "--salt", "pepper", "-o", str(restored))
+    assert r.returncode == 0
+    assert csv_col(restored, "email") == csv_col(csv_file, "email")
+
+
+def test_validate_profile_yaml_ok(tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        """
+        engine: polars
+        seed: 42
+        columns:
+          email: fake
+        auto: false
+        """
+    )
+
+    r = run("validate-profile", str(profile))
+    assert r.returncode == 0
+    output = r.stdout + r.stderr
+    assert "Profile" in output and "valid" in output
+
+
+def test_validate_profile_yaml_invalid(tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        """
+        engine: invalid-engine
+        columns:
+          email: fake
+        auto: false
+        """
+    )
+
+    r = run("validate-profile", str(profile))
+    assert r.returncode != 0
+    assert "Profile validation failed" in r.stderr or "Profile validation failed" in r.stdout
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # mask — engines
 # ══════════════════════════════════════════════════════════════════════════════
@@ -200,6 +331,21 @@ def test_reversible_mask_unmask_round_trip(csv_file, tmp_path):
     run("mask", str(csv_file), "-c", "email", "-s", "redact",
         "--reversible", "--key", "secret123", "-o", str(masked))
     assert all(v.startswith("ENC:") for v in csv_col(masked, "email"))
+
+    run("unmask", str(masked), "-c", "email",
+        "--key", "secret123", "-o", str(restored))
+    assert csv_col(restored, "email") == original
+
+
+def test_reversible_cipher_choice_round_trip(csv_file, tmp_path):
+    masked = tmp_path / "masked_chacha.csv"
+    restored = tmp_path / "restored_chacha.csv"
+    original = csv_col(csv_file, "email")
+
+    run("mask", str(csv_file), "-c", "email", "-s", "redact",
+        "--reversible", "--reversible-cipher", "chacha20-poly1305",
+        "--key", "secret123", "-o", str(masked))
+    assert all(v.startswith("ENC-CHACHA:") for v in csv_col(masked, "email"))
 
     run("unmask", str(masked), "-c", "email",
         "--key", "secret123", "-o", str(restored))

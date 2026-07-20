@@ -119,14 +119,27 @@ class JSONPathAdapter(BaseDataFrameAdapter):
             masked = strategy.mask(match.value, pii_type, ctx)
             match.full_path.update_or_create(self._document, masked)
 
-    def apply_unmask(self, col: str, key_bytes: bytes) -> None:
+    def apply_unmask(
+        self,
+        col: str,
+        key_bytes: bytes,
+        kms_provider: str | None = None,
+        kms_region: str | None = None,
+        kms_encryption_context: dict[str, str] | None = None,
+    ) -> None:
         if col not in self._paths:
             return
         expr = self._parse_path(self._paths[col])
         matches = expr.find(self._document)
         for match in matches:
             if match.value:
-                unmasked = decrypt_value(str(match.value), key_bytes)
+                unmasked = decrypt_value(
+                    str(match.value),
+                    key_bytes,
+                    kms_provider=kms_provider,
+                    kms_region=kms_region,
+                    kms_encryption_context=kms_encryption_context,
+                )
                 match.full_path.update_or_create(self._document, unmasked)
 
     def sample_values(self, col: str, n: int = 3) -> list[Any]:

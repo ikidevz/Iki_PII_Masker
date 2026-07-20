@@ -10,6 +10,7 @@ class AdapterFactory:
     def create(engine: Engine) -> BaseDataFrameAdapter:
         if engine == Engine.polars:
             return PolarsAdapter()
+        if engine == Engine.pandas:
+            return PandasAdapter()
         if engine == Engine.duckdb:
             return DuckDBAdapter()
-        return PandasAdapter()
