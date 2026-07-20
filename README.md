@@ -6,7 +6,7 @@ A production-grade, pipe-friendly CLI tool and Python library for data
 engineers and analysts who need to sanitize datasets fast — without wrestling
 with config files or heavyweight frameworks.
 
-![img](assets/readme.png)
+![img](assets/image.png)
 
 ```bash
 pii_masker mask data.csv --auto --strategy fake -o clean.csv
