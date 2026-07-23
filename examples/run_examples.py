@@ -13,49 +13,64 @@ Prerequisites:
 """
 
 from __future__ import annotations
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from Iki_PII_Masker import (
-    Strategy,
-    Engine,
-    FileFormat,
-    ProfileConfig,
-    ColumnRuleMap,
-    MaskingContext,
-    encrypt_value,
-    decrypt_value,
-)
-from Iki_PII_Masker.facade import report_detection, report_masking  # Rich output
-from Iki_PII_Masker.facade import create_jsonpath_adapter           # nested JSON
-from Iki_PII_Masker.facade import create_xml_adapter                # XML documents
-from Iki_PII_Masker.facade import create_sql_adapter                # live database
-# polars / pandas / duckdb
-from Iki_PII_Masker.facade import create_adapter
-from Iki_PII_Masker.facade import derive_encryption_key
-from Iki_PII_Masker.facade import make_context, make_reversible_context
-from Iki_PII_Masker.facade import load_data, save_data
-# reverse AES masking
-from Iki_PII_Masker.facade import unmask_dataframe
-# apply any strategy
-from Iki_PII_Masker.facade import mask_dataframe
-# value-based PII detection
-from Iki_PII_Masker.facade import detect_pii_by_value
-# name-based PII detection
-from Iki_PII_Masker.facade import detect_pii
 
+import csv
 import io
+import json
 import sys
 import time
-import json
-import csv
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from rich.console import Console
 from rich.rule import Rule
+
+from Iki_PII_Masker import (
+    ColumnRuleMap,
+    Engine,
+    FileFormat,
+    MaskingContext,
+    ProfileConfig,
+    Strategy,
+    create_adapter,
+    create_jsonpath_adapter,
+    create_sql_adapter,
+    create_xml_adapter,
+    decrypt_value,
+    derive_encryption_key,
+    detect_pii,
+    detect_pii_by_value,
+    encrypt_value,
+    load_data,
+    make_context,
+    make_reversible_context,
+    mask_dataframe,
+    report_detection,
+    report_masking,
+    save_data,
+    unmask_dataframe,
+)
+from Iki_PII_Masker.config.crypto import (
+    derive_kdf_bytes,
+    hash_value,
+    hmac_value,
+    normalize_hash_algorithm,
+    normalize_hmac_algorithm,
+    normalize_kdf_algorithm,
+    normalize_signature_algorithm,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 # ── import every feature from the façade — one feature per import line ────────
 
@@ -812,7 +827,7 @@ def example_34_reversible_cipher_choice() -> None:
 
 def example_35_reversible_cipher_variants() -> None:
     section(
-        "35 · Reversible cipher variants — AES-CCM / AES-SIV / AES-CBC-HMAC / RSA-OAEP / ECIES / FF1 / FF3-1"
+        "35 · Reversible cipher variants — AES / ChaCha20 / Ascon / RSA / ECIES / FF1 / FF3-1"
     )
 
     variants = [
@@ -823,6 +838,19 @@ def example_35_reversible_cipher_variants() -> None:
         ("ecies", "35_reversible_ecies.csv", "email"),
         ("ff1", "35_reversible_ff1.csv", "user_id"),
         ("ff3-1", "35_reversible_ff3.csv", "user_id"),
+        ("aes-256-gcm", "35_reversible_aes_256_gcm.csv", "email"),
+        ("aes-192-gcm", "35_reversible_aes_192_gcm.csv", "email"),
+        ("aes-128-gcm", "35_reversible_aes_128_gcm.csv", "email"),
+        ("aes-256-ccm", "35_reversible_aes_256_ccm.csv", "email"),
+        ("aes-192-ccm", "35_reversible_aes_192_ccm.csv", "email"),
+        ("aes-128-ccm", "35_reversible_aes_128_ccm.csv", "email"),
+        ("aes-256-gcm-siv", "35_reversible_aes_256_gcm_siv.csv", "email"),
+        ("aes-siv", "35_reversible_aes_siv.csv", "email"),
+        ("ascon-128", "35_reversible_ascon_128.csv", "email"),
+        ("ascon-128a", "35_reversible_ascon_128a.csv", "email"),
+        ("chacha20-poly1305", "35_reversible_chacha20_poly1305.csv", "email"),
+        ("xsalsa20-poly1305", "35_reversible_xsalsa20_poly1305.csv", "email"),
+        ("xchacha20-poly1305", "35_reversible_xchacha20_poly1305.csv", "email"),
     ]
 
     for cipher_name, filename, column in variants:
@@ -914,7 +942,7 @@ def example_37_kms_envelope() -> None:
         "  AWS KMS envelope masking is supported by the CLI and requires")
     console.print("  a configured AWS environment and a valid KMS key.")
     console.print("  Example command:")
-    console.print("  [dim]pii_masker mask data.csv")
+    console.print("  pii_masker mask data.csv")
     console.print("      --columns email:user_id")
     console.print("      --reversible")
     console.print("      --reversible-cipher kms-envelope")
@@ -922,14 +950,82 @@ def example_37_kms_envelope() -> None:
     console.print("      --kms-key-id alias/my-key")
     console.print("      --kms-region us-east-1")
     console.print("      --kms-encryption-context purpose=pii-mask")
-    console.print("      -o output.csv[/dim]")
+    console.print("      -o output.csv")
     console.print("  To restore:")
-    console.print("  [dim]pii_masker unmask output.csv")
+    console.print("  pii_masker unmask output.csv")
     console.print("      --columns email:user_id")
     console.print("      --kms-provider aws")
     console.print("      --kms-region us-east-1")
     console.print("      --kms-encryption-context purpose=pii-mask")
-    console.print("      -o restored.csv[/dim]")
+    console.print("      -o restored.csv")
+
+
+def example_38_algorithm_aliases() -> None:
+    section(
+        "38 · Algorithm aliases — new cipher / hash / HMAC / KDF / signature support")
+
+    key = derive_encryption_key("demo-alias-secret")
+    cipher_names = [
+        "aes-256-gcm",
+        "aes-192-gcm",
+        "aes-128-gcm",
+        "aes-256-ccm",
+        "aes-192-ccm",
+        "aes-128-ccm",
+        "aes-256-gcm-siv",
+        "aes-siv",
+        "ascon-128",
+        "ascon-128a",
+        "chacha20-poly1305",
+        "xsalsa20-poly1305",
+        "xchacha20-poly1305",
+    ]
+    for cipher_name in cipher_names:
+        token = encrypt_value("alice@example.com", key, cipher_name)
+        round_trip = decrypt_value(token, key)
+        console.print(
+            f"  [cyan]{cipher_name}[/] → round-trip {'ok' if round_trip == 'alice@example.com' else 'failed'}"
+        )
+
+    hash_examples = [
+        ("sha3-256", "sha3-256"),
+        ("sha512-256", "sha512-256"),
+        ("xxh3-64", "xxh3-64"),
+        ("blake3", "blake3"),
+    ]
+    for raw_name, display_name in hash_examples:
+        normalized = normalize_hash_algorithm(raw_name)
+        digest = hash_value("alice@example.com", algorithm=raw_name)
+        console.print(
+            f"  [green]hash[/] {display_name} → {normalized} ({digest[:16]}...)")
+
+    hmac_examples = [
+        ("hmac-sha3-256", "hmac-sha3-256"),
+        ("hmac-blake2s", "hmac-blake2s"),
+    ]
+    for raw_name, display_name in hmac_examples:
+        normalized = normalize_hmac_algorithm(raw_name)
+        digest = hmac_value("alice@example.com",
+                            b"shared-secret", algorithm=raw_name)
+        console.print(
+            f"  [green]hmac[/] {display_name} → {normalized} ({digest[:16]}...)")
+
+    kdf_examples = [
+        ("pbkdf2-sha512-256", "pbkdf2-sha512-256"),
+        ("scrypt", "scrypt"),
+    ]
+    for raw_name, display_name in kdf_examples:
+        normalized = normalize_kdf_algorithm(raw_name)
+        derived = derive_kdf_bytes(
+            "demo-secret", algorithm=raw_name, length=16)
+        console.print(
+            f"  [green]kdf[/] {display_name} → {normalized} ({derived.hex()[:24]}...)"
+        )
+
+    signature_examples = ["rsa-pss", "ed25519", "ml-dsa-44"]
+    for raw_name in signature_examples:
+        normalized = normalize_signature_algorithm(raw_name)
+        console.print(f"  [green]signature[/] {raw_name} → {normalized}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -974,6 +1070,7 @@ EXAMPLES = [
     example_35_reversible_cipher_variants,
     example_36_ner_redact,
     example_37_kms_envelope,
+    example_38_algorithm_aliases,
 ]
 
 

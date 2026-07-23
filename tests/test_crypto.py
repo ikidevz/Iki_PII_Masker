@@ -8,6 +8,8 @@ from Iki_PII_Masker.config.crypto import (
     _normalize_cipher,
     decrypt_value,
     encrypt_value,
+    normalize_hash_algorithm,
+    normalize_hmac_algorithm,
 )
 from Iki_PII_Masker.facade import derive_encryption_key, unmask_dataframe
 
@@ -179,6 +181,64 @@ def test_optional_cipher_missing_dependency_raises(monkeypatch, missing_module, 
 
     with pytest.raises(ImportError):
         encrypt_value("secret", derive_encryption_key("test"), cipher=cipher)
+
+
+@pytest.mark.parametrize(
+    "cipher",
+    [
+        "aes-256-gcm",
+        "aes-192-gcm",
+        "aes-128-gcm",
+        "aes-256-ccm",
+        "aes-192-ccm",
+        "aes-128-ccm",
+        "aes-256-gcm-siv",
+        "aes-siv",
+        "xchacha20-poly1305",
+        "xsalsa20-poly1305",
+    ],
+)
+def test_encrypt_decrypt_round_trip_with_explicit_cipher_aliases(cipher):
+    key = derive_encryption_key("roundtrip")
+    token = encrypt_value("alice@example.com", key, cipher=cipher)
+    assert decrypt_value(token, key) == "alice@example.com"
+
+
+@pytest.mark.parametrize(
+    "algorithm,expected",
+    [
+        ("sha-256", "sha256"),
+        ("sha3-256", "sha3-256"),
+        ("sha512-224", "sha512-224"),
+        ("hmac-sha256", "hmac-sha256"),
+        ("pbkdf2-sha256", "pbkdf2-sha256"),
+        ("argon2id", "argon2id"),
+    ],
+)
+def test_normalize_hash_algorithm_names(algorithm, expected):
+    assert normalize_hash_algorithm(algorithm) == expected
+
+
+@pytest.mark.parametrize(
+    "algorithm,expected",
+    [
+        ("hmac-sha224", "hmac-sha224"),
+        ("hmac-sha256", "hmac-sha256"),
+        ("hmac-sha512-224", "hmac-sha512-224"),
+        ("hmac-sha3-256", "hmac-sha3-256"),
+        ("hmac-blake2b", "hmac-blake2b"),
+    ],
+)
+def test_normalize_hmac_algorithm_names(algorithm, expected):
+    assert normalize_hmac_algorithm(algorithm) == expected
+
+
+@pytest.mark.parametrize("cipher", ["ascon-128", "ascon-128a"])
+def test_ascon_cipher_aliases_round_trip(cipher):
+    key = derive_encryption_key("roundtrip")
+    token = encrypt_value("alice@example.com", key, cipher=cipher)
+    assert token.startswith("ENC-ASCON")
+    assert decrypt_value(token, key) == "alice@example.com"
 
 
 def test_supported_reversible_ciphers_are_documented():
