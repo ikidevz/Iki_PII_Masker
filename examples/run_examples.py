@@ -1029,6 +1029,152 @@ def example_38_algorithm_aliases() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 39 — StrategyFactory — stateless vs stateful caching
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_39_strategy_factory() -> None:
+    section("39 · StrategyFactory — stateless vs stateful caching")
+
+    from Iki_PII_Masker.strategies.factory import StrategyFactory
+
+    console.print("  [bold]Stateless Strategies (cached as singletons):[/]")
+    # Stateless strategies return the same cached instance
+    redact1 = StrategyFactory.create(Strategy.redact)
+    redact2 = StrategyFactory.create(Strategy.redact)
+    is_same = redact1 is redact2
+    console.print(
+        f"    Strategy.redact:  instance 1 is instance 2 = {is_same} (cached)")
+
+    hash1 = StrategyFactory.create(Strategy.hash)
+    hash2 = StrategyFactory.create(Strategy.hash)
+    is_same = hash1 is hash2
+    console.print(
+        f"    Strategy.hash:    instance 1 is instance 2 = {is_same} (cached)")
+
+    console.print(
+        "  [bold]Stateful Strategies (fresh instances each time):[/]")
+    # Stateful strategies return fresh instances
+    tok1 = StrategyFactory.create(Strategy.tokenize)
+    tok2 = StrategyFactory.create(Strategy.tokenize)
+    is_same = tok1 is tok2
+    console.print(
+        f"    Strategy.tokenize:    instance 1 is instance 2 = {is_same} (fresh)")
+
+    pseudo1 = StrategyFactory.create(Strategy.pseudonymize)
+    pseudo2 = StrategyFactory.create(Strategy.pseudonymize)
+    is_same = pseudo1 is pseudo2
+    console.print(
+        f"    Strategy.pseudonymize: instance 1 is instance 2 = {is_same} (fresh)")
+
+    console.print("  [bold]Performance Benefit:[/]")
+    console.print(f"    Stateless strategies avoid re-initialization overhead")
+    console.print(f"    Stateful strategies prevent cross-job state leakage")
+
+    console.print("  [bold]Reset Cache:[/]")
+    StrategyFactory.reset()
+    redact3 = StrategyFactory.create(Strategy.redact)
+    is_same = redact1 is redact3
+    console.print(f"    After reset, new instance created = {not is_same}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 40 — FormatRegistry — file format detection from extension
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_40_format_registry() -> None:
+    section("40 · FormatRegistry — file format detection from extension")
+
+    from Iki_PII_Masker.strategies.factory import FormatRegistry
+
+    console.print("  [bold]Format Detection by Extension:[/]")
+    test_files = [
+        "data.csv",
+        "data.parquet",
+        "data.json",
+        "data.ndjson",
+        "data.xlsx",
+        "data.xml",
+        "data.feather",
+        "data.orc",
+        "data.pkl",
+        "data.html",
+    ]
+
+    for filename in test_files:
+        path = Path(filename)
+        try:
+            fmt = FormatRegistry.detect(path)
+            console.print(f"    {filename:20} → {fmt.value:12} ✓")
+        except SystemExit:
+            console.print(f"    {filename:20} → error")
+
+    console.print("  [bold]Supported Extensions Mapping:[/]")
+    ext_samples = {
+        ".csv": "CSV",
+        ".parquet": "Apache Parquet",
+        ".json": "JSON",
+        ".ndjson/.jsonl": "JSON Lines",
+        ".xlsx/.xls": "Excel",
+        ".feather/.arrow": "Apache Feather",
+        ".orc": "Apache ORC",
+        ".pkl": "Python Pickle",
+        ".xml": "XML",
+    }
+    for ext, desc in ext_samples.items():
+        console.print(f"    {ext:20} → {desc}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 41 — Adapter Pattern — engine selection and format routing
+# ══════════════════════════════════════════════════════════════════════════════
+
+def example_41_adapter_pattern() -> None:
+    section("41 · Adapter Pattern — engine selection and format routing")
+
+    console.print("  [bold]DataFrame Engines:[/]")
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+    console.print(f"    Engine.polars → {adapter.__class__.__name__}")
+    console.print(
+        f"      Columns: {len(adapter.columns)}, Rows: {adapter.row_count()}")
+
+    adapter = create_adapter(Engine.pandas)
+    load_data(adapter, DATA)
+    console.print(f"    Engine.pandas → {adapter.__class__.__name__}")
+    console.print(
+        f"      Columns: {len(adapter.columns)}, Rows: {adapter.row_count()}")
+
+    adapter = create_adapter(Engine.duckdb)
+    load_data(adapter, DATA)
+    console.print(f"    Engine.duckdb → {adapter.__class__.__name__}")
+    console.print(
+        f"      Columns: {len(adapter.columns)}, Rows: {adapter.row_count()}")
+
+    console.print("  [bold]Format-Specific Unsupported Combinations:[/]")
+    console.print("    Polars:")
+    console.print(
+        "      ✗ ORC, Pickle, HTML, HDF5, Stata, SPSS, SAS (pandas-only)")
+    console.print("      ✓ Avro, Delta, ODS (read-only)")
+
+    console.print("    Pandas:")
+    console.print("      ✗ Avro, Delta (Polars-native)")
+    console.print(
+        "      ✓ All pandas-native formats (CSV, Parquet, Excel, ORC, etc.)")
+
+    console.print("  [bold]Adapter Masking Capabilities:[/]")
+    adapter = create_adapter(Engine.polars)
+    load_data(adapter, DATA)
+
+    original = adapter.sample_values("email", 2)
+    console.print(f"    Before mask: {original}")
+
+    mask_dataframe(adapter, "email", Strategy.redact)
+    masked = adapter.sample_values("email", 2)
+    console.print(f"    After mask:  {masked}")
+    console.print(f"    Masking applied via adapter interface ✓")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1071,6 +1217,9 @@ EXAMPLES = [
     example_36_ner_redact,
     example_37_kms_envelope,
     example_38_algorithm_aliases,
+    example_39_strategy_factory,
+    example_40_format_registry,
+    example_41_adapter_pattern,
 ]
 
 

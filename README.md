@@ -20,23 +20,23 @@ pii_masker mask data.csv --auto --strategy fake -o clean.csv
 
 ## Features
 
-| Feature                        | Details                                                                                                                                                                                                                             |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **19 masking strategies**      | `fake`, `redact`, `hash`, `pbkdf2`, `salted_hash`, `hmac`, `null`, `partial`, `truncate`, `keep`, `tokenize`, `pseudonymize`, `shuffle`, `anonymize`, `perturb`, `bucketize`, `generalize`, `mask_format`, `ner_redact`             |
-| **Expanded reversible crypto** | AES-256-GCM, ChaCha20-Poly1305, XChaCha20-Poly1305, XSalsa20-Poly1305, AES-CCM, AES-SIV, AES-CBC-HMAC, Ascon, RSA-OAEP, ECIES, FF1/FF3-1, or KMS envelope — restore originals with `--key`, env var, or `~/.pii_masker/config.toml` |
-| **Verification**               | `--verify` re-scans masked output for leftover PII after writing                                                                                                                                                                    |
-| **Composite strategy**         | Chain multiple strategies in Python with optional reversible encryption                                                                                                                                                             |
-| **Dual PII detection**         | Column-name heuristics + cell-value scanning (`detect_pii_by_value`) plus optional NER scanning (`detect_pii_by_ner`)                                                                                                               |
-| **Multi-engine**               | Polars, Pandas, DuckDB, SQLAlchemy (live DB), XML, JSONPath                                                                                                                                                                         |
-| **6 file formats**             | CSV, Parquet, JSON, NDJSON, Excel, XML                                                                                                                                                                                              |
-| **Pipe-friendly**              | stdin → stdout, zero config required                                                                                                                                                                                                |
-| **Reproducible fakes**         | `--seed` for deterministic output in CI/testing                                                                                                                                                                                     |
-| **Dry run + report**           | Preview masking plan before touching any data                                                                                                                                                                                       |
-| **Token vault**                | `tokenize` / `pseudonymize` can use a persistent vault for cross-run consistency (`--vault`)                                                                                                                                        |
-| **Per-column keys**            | `--key-provider local` derives a unique reversible key per column, while still using one master secret                                                                                                                              |
-| **PII detector**               | `detect` subcommand scans columns, cell values, and optionally NER entities (`--ner`), then prints sample values. NER is probabilistic — review results and verify before relying on entity-based masking.                          |
-| **Profile-driven config**      | `ProfileConfig` + `ColumnRuleMap` — load masking rules from YAML or Python dict                                                                                                                                                     |
-| **Public package API**         | Import directly from the package root with `from Iki_PII_Masker import ...` or from the façade module for a feature-oriented import surface                                                                                         |
+| Feature                        | Details                                                                                                                                                                                                                                   |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **19 masking strategies**      | `fake`, `redact`, `hash`, `pbkdf2`, `salted_hash`, `hmac`, `null`, `partial`, `truncate`, `keep`, `tokenize`, `pseudonymize`, `shuffle`, `anonymize`, `perturb`, `bucketize`, `generalize`, `mask_format`, `ner_redact`                   |
+| **Expanded reversible crypto** | AES-256-GCM, ChaCha20-Poly1305, XChaCha20-Poly1305, XSalsa20-Poly1305, AES-CCM, AES-SIV, AES-CBC-HMAC, Ascon, RSA-OAEP, ECIES, FF1/FF3-1, or KMS envelope — restore originals with `--key`, env var, or `~/.pii_masker/config.toml`       |
+| **Verification**               | `--verify` re-scans masked output for leftover PII after writing                                                                                                                                                                          |
+| **Composite strategy**         | Chain multiple strategies in Python with optional reversible encryption                                                                                                                                                                   |
+| **Dual PII detection**         | Column-name heuristics + cell-value scanning (`detect_pii_by_value`) plus optional NER scanning (`detect_pii_by_ner`)                                                                                                                     |
+| **Multi-engine**               | Polars, Pandas, DuckDB, SQLAlchemy (live DB), XML, JSONPath                                                                                                                                                                               |
+| **18 file formats**            | CSV, Parquet, JSON, NDJSON, Excel, XML, Feather/Arrow IPC, ORC, Pickle, HTML, Fixed-Width (fwf), HDF5, Stata, SPSS, SAS, Avro, Delta Lake, ODS, clipboard — see [Supported File Formats](#supported-file-formats) for per-engine coverage |
+| **Pipe-friendly**              | stdin → stdout, zero config required                                                                                                                                                                                                      |
+| **Reproducible fakes**         | `--seed` for deterministic output in CI/testing                                                                                                                                                                                           |
+| **Dry run + report**           | Preview masking plan before touching any data                                                                                                                                                                                             |
+| **Token vault**                | `tokenize` / `pseudonymize` can use a persistent vault for cross-run consistency (`--vault`)                                                                                                                                              |
+| **Per-column keys**            | `--key-provider local` derives a unique reversible key per column, while still using one master secret                                                                                                                                    |
+| **PII detector**               | `detect` subcommand scans columns, cell values, and optionally NER entities (`--ner`), then prints sample values. NER is probabilistic — review results and verify before relying on entity-based masking.                                |
+| **Profile-driven config**      | `ProfileConfig` + `ColumnRuleMap` — load masking rules from YAML or Python dict                                                                                                                                                           |
+| **Public package API**         | Import directly from the package root with `from Iki_PII_Masker import ...` or from the façade module for a feature-oriented import surface                                                                                               |
 
 ---
 
@@ -67,6 +67,53 @@ pip install eciespy pyffx ff3              # Optional reversible cipher support
 ```
 
 **CLI framework:** `argparse` (stdlib — no extra install needed)
+
+---
+
+## Supported File Formats
+
+I/O is handled per-engine by the adapters in `adapters/pandas_adapter.py` and
+`adapters/polars_adapter.py`. Both wrap their underlying library's native
+readers/writers rather than re-implementing parsing, so behavior matches:
+
+- pandas: https://pandas.pydata.org/docs/user_guide/io.html
+- Polars: https://docs.pola.rs/api/python/stable/reference/io.html
+
+Pass `--engine pandas` or `--engine polars` (`-e`) to pick which one handles
+a given format. `--format` (`-f`) is auto-detected from the file extension
+where possible; a few formats (`fwf`, `delta`, `clipboard`) have no reliable
+extension and must be passed explicitly.
+
+| `FileFormat`          | Extension(s)                  | Pandas engine             | Polars engine                 |
+| --------------------- | ----------------------------- | ------------------------- | ----------------------------- |
+| `csv`                 | `.csv`                        | read/write                | read/write                    |
+| `parquet`             | `.parquet`                    | read/write                | read/write                    |
+| `json`                | `.json`                       | read/write                | read/write                    |
+| `ndjson`              | `.ndjson`, `.jsonl`           | read/write                | read/write                    |
+| `excel`               | `.xlsx`, `.xls`               | read/write                | read/write                    |
+| `xml`                 | `.xml`                        | —                         | —                             |
+| `feather` (Arrow IPC) | `.feather`, `.ftr`, `.arrow`  | read/write                | read/write (`read/write_ipc`) |
+| `orc`                 | `.orc`                        | read/write                | not supported                 |
+| `pickle`              | `.pkl`, `.pickle`             | read/write                | not supported                 |
+| `html`                | `.html`, `.htm`               | read/write                | not supported                 |
+| `fwf` (fixed-width)   | _(pass `--format fwf`)_       | read-only                 | not supported                 |
+| `hdf5`                | `.h5`, `.hdf5`                | read/write (`key="data"`) | not supported                 |
+| `stata`               | `.dta`                        | read/write                | not supported                 |
+| `spss`                | `.sav`                        | read-only                 | not supported                 |
+| `sas`                 | `.sas7bdat`                   | read-only                 | not supported                 |
+| `avro`                | `.avro`                       | not supported             | read/write                    |
+| `delta` (Delta Lake)  | _(pass `--format delta`)_     | not supported             | read/write                    |
+| `ods` (OpenDocument)  | `.ods`                        | not supported             | read-only                     |
+| `clipboard`           | _(pass `--format clipboard`)_ | read/write                | read/write                    |
+
+Notes:
+
+- XML goes through the dedicated `create_xml_adapter` (XPath-based), not `Engine.polars`/`Engine.pandas` — see the XML adapter section below.
+- Picking a format your chosen engine doesn't support raises a `NotImplementedError` that names the other engine to use instead of failing silently or partially.
+- `fwf`, `spss`, and `sas` are read-only because pandas itself has no writer for them.
+- `avro` and `delta` are Polars-only — there's no pandas equivalent, so `--engine pandas` with either of those formats is rejected.
+- `orc`, `pickle`, `html`, `fwf`, `hdf5`, `stata`, `spss`, and `sas` are pandas-only — Polars has no native reader/writer for them.
+- Some optional formats need extra dependencies pandas/Polars already document (e.g. `pyarrow` for feather/ORC, `tables`/PyTables for HDF5, `pyreadstat` for SPSS/SAS, `fastavro` for Avro, `deltalake` for Delta Lake) — install them the same way you'd install them for pandas/Polars directly.
 
 ---
 
@@ -404,8 +451,10 @@ Options:
                             tokenize|pseudonymize|shuffle|anonymize|perturb|bucketize|
                             generalize|mask_format [default: redact]
   -e, --engine ENGINE       polars|pandas|duckdb  [default: polars]
-  -f, --format FORMAT       csv|parquet|json|ndjson|excel|xml
-                            (auto-detected from extension)
+  -f, --format FORMAT       csv|parquet|json|ndjson|excel|xml|feather|orc|
+                            pickle|html|fwf|hdf5|stata|spss|sas|avro|delta|
+                            ods|clipboard (auto-detected from extension where
+                            possible — see Supported File Formats)
       --auto                Auto-detect PII columns by name heuristics
       --reversible          Use reversible encryption for masked values
       --reversible-cipher [aesgcm|chacha20-poly1305|aes-ccm|aes-siv|aes-cbc-hmac|rsa-oaep|ecies|ff1|ff3-1|kms-envelope]
@@ -438,7 +487,9 @@ Options:
   -c, --columns TEXT        Colon-separated columns to decrypt  [required]
       --key TEXT            Secret key used during masking  [required]
   -e, --engine ENGINE       polars|pandas|duckdb  [default: polars]
-  -f, --format FORMAT       csv|parquet|json|ndjson|excel
+  -f, --format FORMAT       csv|parquet|json|ndjson|excel|feather|orc|pickle|
+                            html|fwf|hdf5|stata|spss|sas|avro|delta|ods|
+                            clipboard (see Supported File Formats)
 ```
 
 > `--key` can also be omitted when `PII_MASKER_KEY` is set or `~/.pii_masker/config.toml`
@@ -450,7 +501,9 @@ Arguments:
   [INPUT_FILE]              Input file path. Omit to read from stdin.
 
 Options:
-  -f, --format FORMAT       csv|parquet|json|ndjson|excel
+  -f, --format FORMAT       csv|parquet|json|ndjson|excel|feather|orc|pickle|
+                            html|fwf|hdf5|stata|spss|sas|avro|delta|ods|
+                            clipboard (see Supported File Formats)
   -e, --engine ENGINE       polars|pandas|duckdb  [default: polars]
       --samples INTEGER     Sample values to show per column  [default: 3]
 ```

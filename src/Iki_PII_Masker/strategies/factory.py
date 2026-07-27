@@ -109,6 +109,22 @@ class FormatRegistry:
         ".xlsx":    FileFormat.excel,
         ".xls":     FileFormat.excel,
         ".xml":     FileFormat.xml,
+
+        ".feather":   FileFormat.feather,
+        ".ftr":       FileFormat.feather,
+        ".arrow":     FileFormat.feather,
+        ".orc":       FileFormat.orc,
+        ".pkl":       FileFormat.pickle,
+        ".pickle":    FileFormat.pickle,
+        ".html":      FileFormat.html,
+        ".htm":       FileFormat.html,
+        ".h5":        FileFormat.hdf5,
+        ".hdf5":      FileFormat.hdf5,
+        ".dta":       FileFormat.stata,
+        ".sav":       FileFormat.spss,
+        ".sas7bdat":  FileFormat.sas,
+        ".avro":      FileFormat.avro,
+        ".ods":       FileFormat.ods,
     }
 
     @classmethod

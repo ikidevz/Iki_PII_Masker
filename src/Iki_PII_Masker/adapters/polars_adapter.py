@@ -5,6 +5,19 @@ from ..strategies import BaseMaskingStrategy, MaskingContext
 from typing import Any, Optional
 
 
+# Formats Polars can read/write natively. See:
+# https://docs.pola.rs/api/python/stable/reference/io.html
+#
+# Polars has no ORC, pickle, HTML, fixed-width, HDF5, Stata, SPSS or SAS
+# I/O — those are pandas-only (see pandas_adapter.py). ODS is read-only in
+# Polars (there's a reader, no writer).
+_POLARS_UNSUPPORTED = {
+    FileFormat.orc, FileFormat.pickle, FileFormat.html, FileFormat.fwf,
+    FileFormat.hdf5, FileFormat.stata, FileFormat.spss, FileFormat.sas,
+}
+_POLARS_READ_ONLY = {FileFormat.ods}
+
+
 class PolarsAdapter(BaseDataFrameAdapter):
 
     def __init__(self) -> None:
@@ -12,24 +25,62 @@ class PolarsAdapter(BaseDataFrameAdapter):
 
     def load(self, source: Any, fmt: FileFormat) -> None:
         import polars as pl
+
+        if fmt in _POLARS_UNSUPPORTED:
+            raise NotImplementedError(
+                f"'{fmt.value}' has no Polars reader — it's a pandas-native "
+                f"format (see pandas_adapter.py / "
+                f"https://pandas.pydata.org/docs/user_guide/io.html). "
+                f"Use Engine.pandas for this file."
+            )
+
         readers = {
-            FileFormat.csv:     pl.read_csv,
-            FileFormat.parquet: pl.read_parquet,
-            FileFormat.json:    pl.read_json,
-            FileFormat.ndjson:  pl.read_ndjson,
-            FileFormat.excel:   pl.read_excel,
+            FileFormat.csv:       pl.read_csv,
+            FileFormat.parquet:   pl.read_parquet,
+            FileFormat.json:      pl.read_json,
+            FileFormat.ndjson:    pl.read_ndjson,
+            FileFormat.excel:     pl.read_excel,
+            FileFormat.feather:   pl.read_ipc,
+            FileFormat.avro:      pl.read_avro,
+            FileFormat.delta:     pl.read_delta,
+            FileFormat.ods:       pl.read_ods,
+            FileFormat.clipboard: lambda _s: pl.read_clipboard(),
         }
-        self._df = readers[fmt](source)
+        reader = readers.get(fmt)
+        if reader is None:
+            raise NotImplementedError(
+                f"Polars adapter has no reader for '{fmt.value}'.")
+        self._df = reader(source)
 
     def save(self, dest: Any, fmt: FileFormat) -> None:
+        if fmt in _POLARS_UNSUPPORTED:
+            raise NotImplementedError(
+                f"'{fmt.value}' has no Polars writer — it's a pandas-native "
+                f"format. Use Engine.pandas for this file."
+            )
+        if fmt in _POLARS_READ_ONLY:
+            raise NotImplementedError(
+                f"'{fmt.value}' is read-only in Polars — there is no "
+                f"DataFrame.write_{fmt.value}(). See "
+                f"https://docs.pola.rs/api/python/stable/reference/io.html"
+            )
+
         writers = {
             FileFormat.csv: lambda d: self._df.write_csv(d),
             FileFormat.parquet: lambda d: self._df.write_parquet(d),
             FileFormat.json: lambda d: self._df.write_json(d),
             FileFormat.ndjson: lambda d: self._df.write_ndjson(d),
             FileFormat.excel: lambda d: self._df.write_excel(d),
+            FileFormat.feather: lambda d: self._df.write_ipc(d),
+            FileFormat.avro: lambda d: self._df.write_avro(d),
+            FileFormat.delta: lambda d: self._df.write_delta(d),
+            FileFormat.clipboard: lambda _d: self._df.write_clipboard(),
         }
-        writers[fmt](dest)
+        writer = writers.get(fmt)
+        if writer is None:
+            raise NotImplementedError(
+                f"Polars adapter has no writer for '{fmt.value}'.")
+        writer(dest)
 
     @property
     def columns(self) -> list[str]:
